@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/2.2/ref/settings/
 import ipaddress
 import os, sys
 from datetime import datetime
+from typing import Optional
 
 # This needs to be before markus, which imports pytest
 IN_PYTEST = "pytest" in sys.modules
@@ -51,7 +52,7 @@ SECRET_KEY = config("SECRET_KEY", None, cast=str)
 ON_HEROKU = config("ON_HEROKU", False, cast=bool)
 DEBUG = config("DEBUG", False, cast=bool)
 if DEBUG:
-    INTERNAL_IPS = config("DJANGO_INTERNAL_IPS", default=[])
+    INTERNAL_IPS = config("DJANGO_INTERNAL_IPS", default="", cast=Csv())
 USE_SILK = DEBUG and HAS_SILK and not IN_PYTEST
 
 # Honor the 'X-Forwarded-Proto' header for request.is_secure()
@@ -414,10 +415,10 @@ PREMIUM_PLAN_COUNTRY_LANG_MAPPING = {
 }
 
 SUBSCRIPTIONS_WITH_UNLIMITED = config("SUBSCRIPTIONS_WITH_UNLIMITED", default="")
-PREMIUM_RELEASE_DATE = config(
+_RAW_PREMIUM_RELEASE_DATE = config(
     "PREMIUM_RELEASE_DATE", "2021-10-27 17:00:00+00:00", cast=str
 )
-PREMIUM_RELEASE_DATE = datetime.fromisoformat(PREMIUM_RELEASE_DATE)
+PREMIUM_RELEASE_DATE = datetime.fromisoformat(_RAW_PREMIUM_RELEASE_DATE)
 
 DOMAIN_REGISTRATION_MODAL = config("DOMAIN_REGISTRATION_MODAL", False, cast=bool)
 MAX_ONBOARDING_AVAILABLE = config("MAX_ONBOARDING_AVAILABLE", 0, cast=int)
@@ -669,7 +670,7 @@ CIRCLE_TAG = config("CIRCLE_TAG", "")
 CIRCLE_BRANCH = config("CIRCLE_BRANCH", "")
 
 if SENTRY_RELEASE:
-    sentry_release = SENTRY_RELEASE
+    sentry_release: Optional[str] = SENTRY_RELEASE
 elif CIRCLE_TAG and CIRCLE_TAG != "unknown":
     sentry_release = CIRCLE_TAG
 elif (
