@@ -18,6 +18,7 @@ module = [
     "allauth.socialaccount.models",
     "allauth.socialaccount.providers.fxa.views",
     "boto3",
+    "botocore.client",
     "botocore.config",
     "botocore.exceptions",
     "codetiming",
