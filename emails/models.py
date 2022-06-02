@@ -603,7 +603,8 @@ class DomainAddress(models.Model):
     def user_profile(self):
         return Profile.objects.get(user=self.user)
 
-    def make_domain_address(user_profile, address=None, made_via_email=False):
+    @classmethod
+    def make_domain_address(cls, user_profile, address=None, made_via_email=False):
         check_user_can_make_domain_address(user_profile)
 
         address_contains_badword = False

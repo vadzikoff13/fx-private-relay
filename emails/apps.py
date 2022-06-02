@@ -1,8 +1,10 @@
 import logging
 import os
+from typing import Final
 
 import boto3
 from botocore.config import Config
+from botocore.client import BaseClient
 
 from django.apps import AppConfig
 from django.conf import settings
@@ -12,12 +14,16 @@ logger = logging.getLogger("events")
 
 
 class EmailsConfig(AppConfig):
-    name = "emails"
+    name: Final = "emails"
+    _ses_client: BaseClient
+    s3_client: BaseClient
+    badwords: list[str]
+    blocklist: list[str]
 
     def __init__(self, app_name, app_module):
         super(EmailsConfig, self).__init__(app_name, app_module)
         try:
-            self.ses_client = boto3.client("ses", region_name=settings.AWS_REGION)
+            self._ses_client = boto3.client("ses", region_name=settings.AWS_REGION)
             s3_config = Config(
                 region_name=settings.AWS_REGION,
                 retries={
@@ -33,6 +39,10 @@ class EmailsConfig(AppConfig):
         # https://www.cs.cmu.edu/~biglou/resources/bad-words.txt
         self.badwords = self._load_terms("badwords.txt")
         self.blocklist = self._load_terms("blocklist.txt")
+
+    @property
+    def ses_client(self) -> BaseClient:
+        return self._ses_client
 
     def _load_terms(self, filename):
         terms = []
