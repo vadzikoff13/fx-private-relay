@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from email.message import EmailMessage
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional, Union, cast
+from typing import TYPE_CHECKING, Any, Optional, Union
 from uuid import UUID
 
 from django.apps import apps
@@ -24,11 +24,18 @@ class BotoResponseMetadata:
 
     @classmethod
     def from_dict(cls, raw_metadata: dict[str, Any]) -> BotoResponseMetadata:
+        assert isinstance(raw_metadata["RequestId"], str)
+        assert isinstance(raw_metadata["HTTPStatusCode"], int)
+        assert isinstance(raw_metadata["HTTPHeaders"], dict)
+        for key, value in raw_metadata["HTTPHeaders"].items():
+            assert isinstance(key, str)
+            assert isinstance(value, str)
+        assert isinstance(raw_metadata["RetryAttempts"], int)
         return cls(
-            RequestId=UUID(cast(str, raw_metadata["RequestId"])),
-            HTTPStatusCode=cast(int, raw_metadata["HTTPStatusCode"]),
-            HTTPHeaders=cast(dict[str, str], raw_metadata["HTTPHeaders"]),
-            RetryAttempts=cast(int, raw_metadata["RetryAttempts"]),
+            RequestId=UUID(raw_metadata["RequestId"]),
+            HTTPStatusCode=raw_metadata["HTTPStatusCode"],
+            HTTPHeaders=raw_metadata["HTTPHeaders"],
+            RetryAttempts=raw_metadata["RetryAttempts"],
         )
 
 
@@ -41,8 +48,9 @@ class SendRawEmailResponse:
 
     @classmethod
     def from_dict(cls, raw_response: dict[str, Any]) -> SendRawEmailResponse:
+        assert isinstance(raw_response["MessageId"], str)
         return cls(
-            MessageId=cast(str, raw_response["MessageId"]),
+            MessageId=raw_response["MessageId"],
             ResponseMetadata=BotoResponseMetadata.from_dict(raw_response["ResponseMetadata"])
         )
 
