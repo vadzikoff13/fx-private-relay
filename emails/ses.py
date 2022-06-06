@@ -92,7 +92,7 @@ def send_raw_email(
         Source=from_address,
         Destinations=to_addresses,
         RawMessage={"Data": raw_message},
-        ConfigurationSetName=settings.AWS_SES_CONFIGSET
+        ConfigurationSetName=settings.AWS_SES_CONFIGSET,
     )
     return SendRawEmailResponse.from_dict(raw_response)
 

@@ -799,7 +799,9 @@ def _get_domain_address(local_portion: str, domain_portion: str) -> DomainAddres
         raise e
 
 
-def _get_address(to_address: str, local_portion: str, domain_portion: str) -> Union[DomainAddress, RelayAddress]:
+def _get_address(
+    to_address: str, local_portion: str, domain_portion: str
+) -> Union[DomainAddress, RelayAddress]:
     # if the domain is not the site's 'top' relay domain,
     # it may be for a user's subdomain
     email_domains = get_domains_from_settings().values()

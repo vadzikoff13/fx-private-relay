@@ -102,9 +102,9 @@ def ses_send_raw_email(
     try:
         # Provide the contents of the email.
         ses_response = send_raw_email(
-            from_address = from_address,
-            to_addresses = [to_address],
-            raw_message = msg_with_attachments.as_string()
+            from_address=from_address,
+            to_addresses=[to_address],
+            raw_message=msg_with_attachments.as_string(),
         )
         incr_if_enabled("ses_send_raw_email", 1)
 

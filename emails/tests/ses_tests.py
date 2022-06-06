@@ -7,7 +7,12 @@ from uuid import uuid4
 
 import pytest
 
-from emails.ses import send_simulator_email, BotoResponseMetadata, SendRawEmailResponse, SimulatorScenario
+from emails.ses import (
+    send_simulator_email,
+    BotoResponseMetadata,
+    SendRawEmailResponse,
+    SimulatorScenario,
+)
 
 
 def _ok_response_from_send_raw_email() -> dict[str, Any]:
@@ -49,7 +54,6 @@ def mock_ses_client(settings) -> Iterator[Mock]:
         yield mock_ses_client
 
 
-
 @pytest.mark.parametrize("scenario", list(SimulatorScenario))
 def test_send_simulator_email(mock_ses_client, scenario) -> None:
     response = send_simulator_email(scenario, "test@relay.example.com")
@@ -75,7 +79,9 @@ def test_send_simulator_email(mock_ses_client, scenario) -> None:
 
 
 def test_send_simulator_email_with_tag(mock_ses_client):
-    response = send_simulator_email(SimulatorScenario.SUCCESS, "test@relay.example.com", "a-tag")
+    response = send_simulator_email(
+        SimulatorScenario.SUCCESS, "test@relay.example.com", "a-tag"
+    )
     assert response.ResponseMetadata.HTTPStatusCode == 200
     dest_email = "success+a-tag@simulator.amazonses.com"
     mock_ses_client.send_raw_email.assert_called_once_with(

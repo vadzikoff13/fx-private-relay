@@ -748,4 +748,5 @@ DEFAULT_AUTO_FIELD = "django.db.models.AutoField"
 # Patching for django-types
 for cls in (QuerySet, BaseManager, ForeignKey):
     cls.__clas_getitem__ = classmethod(  # type: ignore [attr-defined]
-        lambda cls, *args, **kwargs: cls)
+        lambda cls, *args, **kwargs: cls
+    )

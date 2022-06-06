@@ -84,7 +84,9 @@ class Command(BaseCommand):
                 )
         return
 
-    def get_from_address(self, from_email: str) -> Union[None, DomainAddress, RelayAddress]:
+    def get_from_address(
+        self, from_email: str
+    ) -> Union[None, DomainAddress, RelayAddress]:
         local_portion, domain_portion = from_email.split("@")
         try:
             return _get_address(from_email, local_portion, domain_portion)
