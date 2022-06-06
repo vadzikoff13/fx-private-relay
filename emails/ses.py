@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from email.message import EmailMessage
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional, Union
+from ipaddress import IPv4Address, IPv6Address, ip_address
+from typing import TYPE_CHECKING, Any, Literal, Optional, Union
 from uuid import UUID
 
 from django.apps import apps
@@ -17,6 +19,8 @@ from .apps import EmailsConfig
 
 @dataclass
 class BotoResponseMetadata:
+    """Response data from a boto3 API call."""
+
     RequestId: UUID
     HTTPStatusCode: int
     HTTPHeaders: dict[str, str]
@@ -51,7 +55,178 @@ class SendRawEmailResponse:
         assert isinstance(raw_response["MessageId"], str)
         return cls(
             MessageId=raw_response["MessageId"],
-            ResponseMetadata=BotoResponseMetadata.from_dict(raw_response["ResponseMetadata"])
+            ResponseMetadata=BotoResponseMetadata.from_dict(
+                raw_response["ResponseMetadata"]
+            ),
+        )
+
+
+@dataclass
+class ComplaintNotification:
+    """A Complaint Notification delivered via SNS.
+
+    See https://docs.aws.amazon.com/ses/latest/dg/notification-contents.html
+    """
+
+    notificationType: Literal["Complaint"]
+    complaint: ComplaintBody
+    mail: MailBody
+
+    @classmethod
+    def from_dict(cls, raw_complaint: dict[str, Any]) -> ComplaintNotification:
+        assert raw_complaint["notificationType"] == "Complaint"
+        return cls(
+            notificationType=raw_complaint["notificationType"],
+            complaint=ComplaintBody.from_dict(raw_complaint["complaint"]),
+            mail=MailBody.from_dict(raw_complaint["mail"]),
+        )
+
+
+def _aws_ts_to_dt(aws_ts: str) -> datetime:
+    """
+    Convert an AWS timestamp to a datetime.
+
+    AWS timestamps look like "2022-05-26T21:59:28.484Z"
+    """
+    assert aws_ts[-1] == "Z"
+    return datetime.fromisoformat(aws_ts[:-1] + "+00:00")
+
+
+@dataclass
+class ComplaintBody:
+    feedbackId: str
+    complaintSubType: Optional[ComplaintSubType]
+    complainedRecipients: list[ComplainedRecipients]
+    timestamp: datetime
+    userAgent: Optional[str]
+    complaintFeedbackType: Optional[ComplaintFeedbackType]
+    complaintFeedbackTypeRaw: Optional[str]
+    arrivalDate: Optional[datetime]
+
+    @classmethod
+    def from_dict(cls, raw_body: dict[str, Any]) -> ComplaintBody:
+        assert isinstance(raw_body["feedbackId"], str)
+
+        raw_subtype = raw_body["complaintSubType"]
+        assert raw_subtype in {None, "OnAccountSuppressionList"}
+        complaintSubType = ComplaintSubType(raw_subtype) if raw_subtype else None
+
+        assert isinstance(raw_body["complainedRecipients"], list)
+        recipients = []
+        for item in raw_body["complainedRecipients"]:
+            recipients.append(ComplainedRecipients.from_dict(item))
+
+        assert isinstance(raw_body["timestamp"], str)
+
+        if "userAgent" in raw_body:
+            userAgent: Optional[str] = raw_body["userAgent"]
+            assert isinstance(userAgent, str)
+        else:
+            userAgent = None
+
+        if "complaintFeedbackType" in raw_body:
+            feedbackTypeRaw: Optional[str] = raw_body["complaintFeedbackType"]
+            feedbackType: Optional[ComplaintFeedbackType] = ComplaintFeedbackType(
+                feedbackTypeRaw
+            )
+        else:
+            feedbackTypeRaw = feedbackType = None
+
+        if "arrivalDate" in raw_body:
+            arrivalDate: Optional[datetime] = _aws_ts_to_dt(raw_body["arrivalDate"])
+        else:
+            arrivalDate = None
+
+        return cls(
+            feedbackId=raw_body["feedbackId"],
+            complaintSubType=complaintSubType,
+            complainedRecipients=recipients,
+            timestamp=_aws_ts_to_dt(raw_body["timestamp"]),
+            userAgent=userAgent,
+            complaintFeedbackType=feedbackType,
+            complaintFeedbackTypeRaw=feedbackTypeRaw,
+            arrivalDate=arrivalDate,
+        )
+
+
+class ComplaintFeedbackType(Enum):
+    """
+    Valid complaint values
+
+    From AWS docs, sourced from
+    https://www.iana.org/assignments/marf-parameters/marf-parameters.xhtml
+    """
+
+    # abuse - Indicates unsolicited email or some other kind of email abuse
+    ABUSE = "abuse"
+    # auth-failure — Email authentication failure report.
+    AUTH_FAILURE = "auth-failure"
+    # fraud — Indicates some kind of fraud or phishing activity.
+    FRAUD = "fraud"
+    # not-spam - Indicates that the entity providing the report does not
+    # consider the message to be spam. This may be used to correct a message
+    # that was incorrectly tagged or categorized as spam.
+    NOT_SPAM = "not-spam"
+    # other — Indicates any other feedback that does not fit into other
+    # registered types.
+    OTHER = "other"
+    # virus — Reports that a virus is found in the originating message.
+    VIRUS = "virus"
+
+
+class ComplaintSubType(Enum):
+    """
+    Complaint sub-type
+
+    Either is null or "OnAccountSuppressionList" because the email was on the
+    account-level suppression list.
+    """
+
+    SUPPRESSED = "OnAccountSuppressionList"
+
+
+@dataclass
+class ComplainedRecipients:
+    emailAddress: str
+
+    @classmethod
+    def from_dict(cls, raw_body: dict[str, Any]) -> ComplainedRecipients:
+        assert isinstance(raw_body["emailAddress"], str)
+        return ComplainedRecipients(emailAddress=raw_body["emailAddress"])
+
+
+@dataclass
+class MailBody:
+    timestamp: datetime
+    source: str
+    sourceArn: str
+    sourceIp: Union[IPv4Address, IPv6Address]
+    callerIdentity: str
+    sendingAccountId: str
+    messageId: str
+    destination: list[str]
+
+    @classmethod
+    def from_dict(cls, raw_body: dict[str, Any]) -> MailBody:
+        assert isinstance(raw_body["timestamp"], str)
+        assert isinstance(raw_body["source"], str)
+        assert isinstance(raw_body["sourceArn"], str)
+        assert isinstance(raw_body["sourceIp"], str)
+        assert isinstance(raw_body["callerIdentity"], str)
+        assert isinstance(raw_body["messageId"], str)
+        assert isinstance(raw_body["destination"], list)
+        for item in raw_body["destination"]:
+            assert isinstance(item, str)
+
+        return MailBody(
+            timestamp=_aws_ts_to_dt(raw_body["timestamp"]),
+            source=raw_body["source"],
+            sourceArn=raw_body["sourceArn"],
+            sourceIp=ip_address(raw_body["sourceIp"]),
+            callerIdentity=raw_body["callerIdentity"],
+            sendingAccountId=raw_body["sendingAccountId"],
+            messageId=raw_body["messageId"],
+            destination=raw_body["destination"],
         )
 
 
