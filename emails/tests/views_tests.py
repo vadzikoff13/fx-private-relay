@@ -1044,7 +1044,7 @@ def test_wrapped_email_test(
     ) in no_space_html
 
 
-def test_sns_notification_complaint(rf, caplog):
+def test_sns_notification_complaint(caplog):
     """_sns_notifications can handle an SNS complaint."""
     complaint = {
         "notificationType": "Complaint",
@@ -1091,3 +1091,42 @@ def test_sns_notification_complaint(rf, caplog):
         == "010001810261be75-1a423a20-9d2f-4dcd-83a3-3193deec7c05-000000"
     )
     assert record.user_agent == "Amazon SES Mailbox Simulator"
+
+
+def test_sns_notification_delivery(caplog):
+    """_sns_notifications can handle an SNS delivery report."""
+    delivery = {
+        "notificationType": "Delivery",
+        "delivery": {
+            "timestamp": "2022-05-26T21:59:29.009Z",
+            "processingTimeMillis": 525,
+            "recipients": ["complaint@simulator.amazonses.com"],
+            "smtpResponse": "250 2.6.0 Message received",
+            "remoteMtaIp": "34.232.130.241",
+            "reportingMTA": "a48-112.smtp-out.amazonses.com",
+        },
+        "mail": {
+            "timestamp": "2022-05-26T21:59:28.484Z",
+            "source": "sender@relay.example.com",
+            "sourceArn": "arn:aws:ses:us-east-1:111122223333:identity/relay.example.com",
+            "sourceIp": "130.211.19.131",
+            "callerIdentity": "test-relay",
+            "sendingAccountId": "111122223333",
+            "messageId": "010001810261bbe4-48c395ab-8280-4e9f-83c7-3424d43d77f1-000000",
+            "destination": ["complaint@simulator.amazonses.com"],
+        },
+    }
+    sns_wrapper = {
+        "Type": "Notification",
+        "Message": json.dumps(delivery),
+    }
+    response = _sns_notification(sns_wrapper)
+    assert response.status_code == 200
+    assert caplog.record_tuples == [
+        ("eventsinfo", logging.INFO, "Delivery report received.")
+    ]
+    record = caplog.records[0]
+    assert record.recipients == "complaint@simulator.amazonses.com"
+    assert record.reporting_mta == "a48-112.smtp-out.amazonses.com"
+    assert record.smtp_response == "250 2.6.0 Message received"
+    assert record.processing_time_s == 0.525
