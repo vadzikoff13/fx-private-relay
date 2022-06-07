@@ -1,11 +1,9 @@
 """Interface to AWS Simple Email Service (SES)"""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
 from email.message import EmailMessage
 from enum import Enum
-from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import TYPE_CHECKING, Any, Literal, Optional, Union
 from uuid import UUID
 
@@ -19,7 +17,11 @@ from .apps import EmailsConfig
 
 @dataclass
 class BotoResponseMetadata:
-    """Response data from a boto3 API call."""
+    """
+    Response data from a boto3 API call.
+
+    This is not documented, but comes from inspecting multiple responses.
+    """
 
     RequestId: UUID
     HTTPStatusCode: int
@@ -82,32 +84,27 @@ class ComplaintNotification:
         )
 
 
-def _aws_ts_to_dt(aws_ts: str) -> datetime:
-    """
-    Convert an AWS timestamp to a datetime.
-
-    AWS timestamps look like "2022-05-26T21:59:28.484Z"
-    """
-    assert aws_ts[-1] == "Z"
-    return datetime.fromisoformat(aws_ts[:-1] + "+00:00")
-
-
 @dataclass
 class ComplaintBody:
+    """
+    The "complaint" element of a Complaint Notification.
+
+    See https://docs.aws.amazon.com/ses/latest/dg/notification-contents.html#complaint-object
+    """
+
     feedbackId: str
     complaintSubType: Optional[ComplaintSubType]
     complainedRecipients: list[ComplainedRecipients]
-    timestamp: datetime
+    timestamp: str
     userAgent: Optional[str]
     complaintFeedbackType: Optional[ComplaintFeedbackType]
-    complaintFeedbackTypeRaw: Optional[str]
-    arrivalDate: Optional[datetime]
+    arrivalDate: Optional[str]
 
     @classmethod
     def from_dict(cls, raw_body: dict[str, Any]) -> ComplaintBody:
         assert isinstance(raw_body["feedbackId"], str)
 
-        raw_subtype = raw_body["complaintSubType"]
+        raw_subtype = raw_body.get("complaintSubType", None)
         assert raw_subtype in {None, "OnAccountSuppressionList"}
         complaintSubType = ComplaintSubType(raw_subtype) if raw_subtype else None
 
@@ -119,21 +116,19 @@ class ComplaintBody:
         assert isinstance(raw_body["timestamp"], str)
 
         if "userAgent" in raw_body:
-            userAgent: Optional[str] = raw_body["userAgent"]
+            userAgent = raw_body["userAgent"]
             assert isinstance(userAgent, str)
         else:
             userAgent = None
 
         if "complaintFeedbackType" in raw_body:
-            feedbackTypeRaw: Optional[str] = raw_body["complaintFeedbackType"]
-            feedbackType: Optional[ComplaintFeedbackType] = ComplaintFeedbackType(
-                feedbackTypeRaw
-            )
+            feedbackType = ComplaintFeedbackType(raw_body["complaintFeedbackType"])
         else:
-            feedbackTypeRaw = feedbackType = None
+            feedbackType = None
 
         if "arrivalDate" in raw_body:
-            arrivalDate: Optional[datetime] = _aws_ts_to_dt(raw_body["arrivalDate"])
+            arrivalDate = raw_body["arrivalDate"]
+            assert isinstance(arrivalDate, str)
         else:
             arrivalDate = None
 
@@ -141,10 +136,9 @@ class ComplaintBody:
             feedbackId=raw_body["feedbackId"],
             complaintSubType=complaintSubType,
             complainedRecipients=recipients,
-            timestamp=_aws_ts_to_dt(raw_body["timestamp"]),
+            timestamp=raw_body["timestamp"],
             userAgent=userAgent,
             complaintFeedbackType=feedbackType,
-            complaintFeedbackTypeRaw=feedbackTypeRaw,
             arrivalDate=arrivalDate,
         )
 
@@ -178,7 +172,7 @@ class ComplaintSubType(Enum):
     """
     Complaint sub-type
 
-    Either is null or "OnAccountSuppressionList" because the email was on the
+    Either null or "OnAccountSuppressionList" because the email was on the
     account-level suppression list.
     """
 
@@ -187,6 +181,13 @@ class ComplaintSubType(Enum):
 
 @dataclass
 class ComplainedRecipients:
+    """
+    The details of the complainint recipients.
+
+    See:
+    https://docs.aws.amazon.com/ses/latest/dg/notification-contents.html#complained-recipients
+    """
+
     emailAddress: str
 
     @classmethod
@@ -197,14 +198,24 @@ class ComplainedRecipients:
 
 @dataclass
 class MailBody:
-    timestamp: datetime
+    """
+    The details of the original email in bounce, compaint, and delivery notifications.
+
+    See:
+    https://docs.aws.amazon.com/ses/latest/dg/notification-contents.html#mail-object
+    """
+
+    timestamp: str
     source: str
     sourceArn: str
-    sourceIp: Union[IPv4Address, IPv6Address]
+    sourceIp: str
     callerIdentity: str
     sendingAccountId: str
     messageId: str
     destination: list[str]
+    headersTruncated: Optional[bool]
+    headers: Optional[list[MailHeader]]
+    commonHeaders: Optional[CommonHeaders]
 
     @classmethod
     def from_dict(cls, raw_body: dict[str, Any]) -> MailBody:
@@ -218,15 +229,113 @@ class MailBody:
         for item in raw_body["destination"]:
             assert isinstance(item, str)
 
+        if "headersTruncated" in raw_body:
+            assert isinstance(raw_body["headersTruncated"], bool)
+            assert isinstance(raw_body["headers"], list)
+            assert isinstance(raw_body["commonHeaders"], dict)
+
+            headersTruncated = raw_body["headersTruncated"]
+            headers = [MailHeader.from_dict(item) for item in raw_body["headers"]]
+            commonHeaders = CommonHeaders.from_dict(raw_body["commonHeaders"])
+        else:
+            headersTruncated = None
+            headers = None
+            commonHeaders = None
+
         return MailBody(
-            timestamp=_aws_ts_to_dt(raw_body["timestamp"]),
+            timestamp=raw_body["timestamp"],
             source=raw_body["source"],
             sourceArn=raw_body["sourceArn"],
-            sourceIp=ip_address(raw_body["sourceIp"]),
+            sourceIp=raw_body["sourceIp"],
             callerIdentity=raw_body["callerIdentity"],
             sendingAccountId=raw_body["sendingAccountId"],
             messageId=raw_body["messageId"],
             destination=raw_body["destination"],
+            headersTruncated=headersTruncated,
+            headers=headers,
+            commonHeaders=commonHeaders,
+        )
+
+
+@dataclass
+class MailHeader:
+    """A name / value pair for a email's original header"""
+
+    name: str
+    value: str
+
+    @classmethod
+    def from_dict(cls, raw_body: dict[str, Any]) -> MailHeader:
+        assert isinstance(raw_body["name"], str)
+        assert isinstance(raw_body["value"], str)
+        return cls(name=raw_body["name"], value=raw_body["value"])
+
+
+@dataclass
+class CommonHeaders:
+    """
+    Headers provided in the incoming / original email.
+
+    Docs at:
+    https://docs.aws.amazon.com/ses/latest/dg/receiving-email-notifications-contents.html#receiving-email-notifications-contents-mail-object-commonHeaders
+    """
+
+    messageId: Optional[str]
+    date: Optional[str]
+    to: Optional[list[str]]
+    cc: Optional[list[str]]
+    bcc: Optional[list[str]]
+    from_: Optional[list[str]]  # API's "from" is a reserved Python keyword
+    sender: Optional[str]
+    returnPath: Optional[str]
+    replyTo: Optional[list[str]]
+    subject: Optional[str]
+
+    @classmethod
+    def from_dict(cls, raw_body: dict[str, Any]) -> CommonHeaders:
+        messageId = raw_body.get("messageId")
+        date = raw_body.get("date")
+        to = raw_body.get("to")
+        cc = raw_body.get("cc")
+        bcc = raw_body.get("bcc")
+        from_ = raw_body.get("from")
+        sender = raw_body.get("sender")
+        returnPath = raw_body.get("returnPath")
+        replyTo = raw_body.get("replyTo")
+        subject = raw_body.get("subject")
+
+        assert messageId is None or isinstance(messageId, str)
+        assert date is None or isinstance(date, str)
+        assert to is None or (
+            isinstance(to, list) and all(isinstance(item, str) for item in to)
+        )
+        assert cc is None or (
+            isinstance(cc, list) and all(isinstance(item, str) for item in cc)
+        )
+        assert bcc is None or (
+            isinstance(bcc, list) and all(isinstance(item, str) for item in bcc)
+        )
+        assert from_ is None or (
+            isinstance(from_, list) and all(isinstance(item, str) for item in from_)
+        )
+        assert sender is None or isinstance(sender, str)
+        assert returnPath is None or isinstance(returnPath, str)
+        assert replyTo is None or (
+            isinstance(replyTo, list) and all(isinstance(item, str) for item in replyTo)
+        )
+        assert subject is None or isinstance(subject, str)
+
+        return cls(
+            messageId=messageId,
+            date=date,
+            to=to,
+            cc=cc,
+            bcc=bcc,
+            from_=from_,
+            sender=sender,
+            returnPath=returnPath,
+            replyTo=replyTo,
+            subject=subject,
         )
 
 
