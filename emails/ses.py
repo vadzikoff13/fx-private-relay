@@ -16,54 +16,6 @@ from .apps import EmailsConfig
 
 
 @dataclass
-class BotoResponseMetadata:
-    """
-    Response data from a boto3 API call.
-
-    This is not documented, but comes from inspecting multiple responses.
-    """
-
-    RequestId: UUID
-    HTTPStatusCode: int
-    HTTPHeaders: dict[str, str]
-    RetryAttempts: int
-
-    @classmethod
-    def from_dict(cls, raw_metadata: dict[str, Any]) -> BotoResponseMetadata:
-        assert isinstance(raw_metadata["RequestId"], str)
-        assert isinstance(raw_metadata["HTTPStatusCode"], int)
-        assert isinstance(raw_metadata["HTTPHeaders"], dict)
-        for key, value in raw_metadata["HTTPHeaders"].items():
-            assert isinstance(key, str)
-            assert isinstance(value, str)
-        assert isinstance(raw_metadata["RetryAttempts"], int)
-        return cls(
-            RequestId=UUID(raw_metadata["RequestId"]),
-            HTTPStatusCode=raw_metadata["HTTPStatusCode"],
-            HTTPHeaders=raw_metadata["HTTPHeaders"],
-            RetryAttempts=raw_metadata["RetryAttempts"],
-        )
-
-
-@dataclass
-class SendRawEmailResponse:
-    """A response from send_raw_email"""
-
-    MessageId: str
-    ResponseMetadata: BotoResponseMetadata
-
-    @classmethod
-    def from_dict(cls, raw_response: dict[str, Any]) -> SendRawEmailResponse:
-        assert isinstance(raw_response["MessageId"], str)
-        return cls(
-            MessageId=raw_response["MessageId"],
-            ResponseMetadata=BotoResponseMetadata.from_dict(
-                raw_response["ResponseMetadata"]
-            ),
-        )
-
-
-@dataclass
 class ComplaintNotification:
     """A Complaint Notification delivered via SNS.
 
@@ -336,6 +288,54 @@ class CommonHeaders:
             returnPath=returnPath,
             replyTo=replyTo,
             subject=subject,
+        )
+
+
+@dataclass
+class SendRawEmailResponse:
+    """A response from send_raw_email"""
+
+    MessageId: str
+    ResponseMetadata: BotoResponseMetadata
+
+    @classmethod
+    def from_dict(cls, raw_response: dict[str, Any]) -> SendRawEmailResponse:
+        assert isinstance(raw_response["MessageId"], str)
+        return cls(
+            MessageId=raw_response["MessageId"],
+            ResponseMetadata=BotoResponseMetadata.from_dict(
+                raw_response["ResponseMetadata"]
+            ),
+        )
+
+
+@dataclass
+class BotoResponseMetadata:
+    """
+    Response data from a boto3 API call.
+
+    This is not documented, but comes from inspecting multiple responses.
+    """
+
+    RequestId: UUID
+    HTTPStatusCode: int
+    HTTPHeaders: dict[str, str]
+    RetryAttempts: int
+
+    @classmethod
+    def from_dict(cls, raw_metadata: dict[str, Any]) -> BotoResponseMetadata:
+        assert isinstance(raw_metadata["RequestId"], str)
+        assert isinstance(raw_metadata["HTTPStatusCode"], int)
+        assert isinstance(raw_metadata["HTTPHeaders"], dict)
+        for key, value in raw_metadata["HTTPHeaders"].items():
+            assert isinstance(key, str)
+            assert isinstance(value, str)
+        assert isinstance(raw_metadata["RetryAttempts"], int)
+        return cls(
+            RequestId=UUID(raw_metadata["RequestId"]),
+            HTTPStatusCode=raw_metadata["HTTPStatusCode"],
+            HTTPHeaders=raw_metadata["HTTPHeaders"],
+            RetryAttempts=raw_metadata["RetryAttempts"],
         )
 
 
