@@ -47,7 +47,7 @@ def _ok_response_from_send_raw_email() -> dict[str, Any]:
     }
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture()
 def mock_ses_client(settings) -> Iterator[Mock]:
     """Mock the SES client to successfully call send_raw_email()"""
     settings.AWS_SES_CONFIGSET = "configset-name"
