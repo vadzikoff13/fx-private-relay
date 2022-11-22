@@ -5,7 +5,13 @@ from __future__ import annotations
 from django.contrib.auth.models import User
 from django.db.models import Count, Q
 
-from privaterelay.cleaners import CleanerTask, CleanupData, Counts
+from privaterelay.cleaners import (
+    CleanerTask,
+    CleanupData,
+    Counts,
+    SectionSpec,
+    SubSectionSpec,
+)
 
 from .models import DomainAddress, Profile, RelayAddress
 from .signals import create_user_profile
@@ -95,50 +101,44 @@ class ServerStorageCleaner(CleanerTask):
             counts["relay_addresses"]["cleaned"] + counts["domain_addresses"]["cleaned"]
         )
 
-    def markdown_report(self) -> str:
-        """Report on server-stored data found and optionally cleaned."""
+    def markdown_report_spec(self) -> list[SectionSpec]:
+        """
+        Return specification for ServerStorageCleaner markdown report
 
-        def model_lines(name: str, counts: dict[str, int]) -> list[str]:
-            """Get the report lines for a model (Profile, Relay Addr., Domain Addrs.)"""
-            total = counts["all"]
-            lines = [f"{name}:", f"  All: {total}"]
-            if total == 0:
-                return lines
-
-            no_server_storage = counts["no_server_storage"]
-            lines.append(
-                "    Without Server Storage: "
-                f"{self._as_percent(no_server_storage, total)}"
-            )
-            if no_server_storage == 0:
-                return lines
-
-            no_data = counts.get("no_server_storage_or_data")
-            has_data = counts.get("no_server_storage_but_data")
-            if no_data is None or has_data is None:
-                return lines
-            lines.extend(
-                [
-                    "      No Data : "
-                    f"{self._as_percent(no_data, no_server_storage)}",
-                    "      Has Data: "
-                    f"{self._as_percent(has_data, no_server_storage)}",
-                ]
-            )
-
-            cleaned = counts.get("cleaned")
-            if cleaned is None or has_data == 0:
-                return lines
-            lines.append(f"        Cleaned: {self._as_percent(cleaned, has_data)}")
-            return lines
-
-        lines: list[str] = (
-            model_lines("Profiles", self.counts["profiles"])
-            + model_lines("Relay Addresses", self.counts["relay_addresses"])
-            + model_lines("Domain Addresses", self.counts["domain_addresses"])
+        - Profiles
+          - All
+            - Without Server Storage
+        - Relay Addresses
+          - All
+            - Without Server Storage
+              - No Data
+              - Has Data
+                - Cleaned (if --clean)
+        - Domain Addresses (same as Relay Addresses)
+        """
+        prof_all = SubSectionSpec("All", is_total_count=True)
+        prof_no_storage = SubSectionSpec(
+            "Without Server Storage", key="no_server_storage"
         )
+        prof_all.subsections = [prof_no_storage]
 
-        return "\n".join(lines)
+        addr_all = SubSectionSpec("All", is_total_count=True)
+        addr_no_storage = SubSectionSpec(
+            "Without Server Storage", key="no_server_storage"
+        )
+        no_data = SubSectionSpec("No Data", key="no_server_storage_or_data")
+        has_data = SubSectionSpec("Has Data", key="no_server_storage_but_data")
+        cleaned = SubSectionSpec("Cleaned", is_clean_count=True)
+
+        addr_all.subsections = [addr_no_storage]
+        addr_no_storage.subsections = [no_data, has_data]
+        has_data.subsections = [cleaned]
+
+        return [
+            SectionSpec("Profiles", subsections=[prof_all]),
+            SectionSpec("Relay Addresses", subsections=[addr_all]),
+            SectionSpec("Domain Addresses", subsections=[addr_all]),
+        ]
 
 
 class MissingProfileCleaner(CleanerTask):
@@ -188,30 +188,22 @@ class MissingProfileCleaner(CleanerTask):
             counts["users"]["cleaned"] += 1
         return counts["users"]["cleaned"]
 
-    def markdown_report(self) -> str:
-        """Report on user with / without profiles."""
+    def markdown_report_spec(self) -> list[SectionSpec]:
+        """
+        Return specification for MissingProfileCleaner markdown report
 
-        # Report on users
-        user_counts = self.counts["users"]
-        all_users = user_counts["all"]
-        has_profile = user_counts["has_profile"]
-        no_profile = user_counts["no_profile"]
-        cleaned = user_counts.get("cleaned")
-        lines = [
-            "Users:",
-            f"  All: {all_users}",
-        ]
-        if all_users > 0:
-            # Breakdown users by profile count
-            lines.extend(
-                [
-                    f"    Has Profile: {self._as_percent(has_profile, all_users)}",
-                    f"    No Profile : {self._as_percent(no_profile, all_users)}",
-                ]
-            )
-        if no_profile and cleaned is not None:
-            lines.append(
-                f"      Now has Profile: {self._as_percent(cleaned, no_profile)}"
-            )
+        - Profiles
+          - All
+            - Has Profile
+            - No Profile
+              - Now has Profile (if --clean)
+        """
+        user_all = SubSectionSpec("All", is_total_count=True)
+        has_profile = SubSectionSpec("Has Profile")
+        no_profile = SubSectionSpec("No Profile")
+        cleaned = SubSectionSpec("Now has Profile", key="cleaned", is_clean_count=True)
 
-        return "\n".join(lines)
+        no_profile.subsections = [cleaned]
+        user_all.subsections = [has_profile, no_profile]
+
+        return [SectionSpec("Users", subsections=[user_all])]

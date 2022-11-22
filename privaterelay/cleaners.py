@@ -2,10 +2,56 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from dataclasses import dataclass, field
+from typing import Any, Optional, Sequence
 
 Counts = dict[str, dict[str, int]]
 CleanupData = dict[str, Any]
+
+
+@dataclass
+class SectionSpec:
+    """
+    Specify a top-level section of a markdown report.
+
+    - name: The display name of the section
+    - key: The key into the counts dict, if it can not be guessed from the name
+    - subsections: A list of SubSectionSpec below this section
+    """
+
+    name: str
+    key: Optional[str] = None
+    subsections: list["SubSectionSpec"] = field(default_factory=list)
+
+    def get_key(self) -> str:
+        """Return key to value in counts dict."""
+        if self.key:
+            return self.key
+        else:
+            return self.name.lower().replace(" ", "_")
+
+
+@dataclass
+class SubSectionSpec(SectionSpec):
+    """
+    Specify a lower-level section of a markdown report.
+
+    It has the fields in SectionSpec and these additional fields:
+
+    - is_total_count: This is a top-level total, like the count of all users.
+      The section is always displayed, even if zero. It is an error if
+      the key is not in the counts dict.
+    - is_clean_count: This is a count of a cleaning action. If --clean was not
+      specified, the key will not be in counts dict, and it should not be
+      displayed. If --clean is specified, the key will be in the counts dict,
+      and should be displayed even if zero.
+
+    If neither is set, then if all sections at the same level are missing or
+    zero, the sections are not displayed and lower sections are not processed.
+    """
+
+    is_total_count: bool = False
+    is_clean_count: bool = False
 
 
 class DataIssueTask:
@@ -20,7 +66,7 @@ class DataIssueTask:
     _cleanup_data: Optional[CleanupData]
     _cleaned: bool
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._counts = None
         self._cleanup_data = None
         self._cleaned = False
@@ -65,16 +111,101 @@ class DataIssueTask:
             self._cleaned = True
         return summary["cleaned"]
 
-    def markdown_report(self) -> str:
-        """Return Markdown-formatted report of issues found and (maybe) fixed."""
-        raise NotImplementedError("markdown_report() not implemented")
+    def markdown_report_spec(self) -> list[SectionSpec]:
+        """Return specification for the markdown report"""
+        raise NotImplementedError("markdown_report_spec() not implemented")
 
-    @staticmethod
-    def _as_percent(part: int, whole: int) -> str:
-        """Return value followed by percent of whole, like '5 ( 30.0%)'"""
-        assert whole > 0
-        len_whole = len(str(whole))
-        return f"{part:{len_whole}d} ({part / whole:6.1%})"
+    def _markdown_subsections(
+        self,
+        subsections: list[SubSectionSpec],
+        counts: dict[str, int],
+        level: int = 1,
+        parent_count: Optional[int] = None,
+    ) -> list[str]:
+        """
+        Recursively generate the markdown for a subsection.
+
+        - subsections - the list of subsection specs to generate
+        - counts - the collection of counts for this and related sections
+        - level - the recursion level, used for indenting
+        - parent_count - the parent section's count, used for percentages.
+
+        Return is a list of strings at this level and below, one per line
+        """
+        assert subsections
+
+        subcounts: dict[str, int] = {}
+        percents: dict[str, str] = {}
+        any_found = False
+        display = False
+
+        # Gather counts at this level
+        for section in subsections:
+            key = section.get_key()
+            try:
+                count = counts[key] or 0
+            except KeyError:
+                if section.is_total_count:
+                    raise
+                count = 0
+            else:
+                any_found = True
+                display |= section.is_total_count or section.is_clean_count
+
+            subcounts[section.name] = count
+            if parent_count:
+                percents[section.name] = f"{count / parent_count:0.1%}"
+
+        # Return early if non-required section is all zeros
+        if not (any_found or display) and all(cnt == 0 for cnt in subcounts.values()):
+            return []
+
+        # Determine widths of names and counts
+        max_name = max(len(key) for key in subcounts.keys())
+        max_count = max(len(str(cnt)) for cnt in subcounts.values())
+
+        # Construct sections
+        lines: list[str] = []
+        indent = level * 2
+        for section in subsections:
+            name = section.name
+            count = subcounts[name]
+            if parent_count:
+                lines.append(
+                    f"{' ' * indent}{section.name:<{max_name}}:{count: {max_count}d} ({percents[name]:>6})"
+                )
+            else:
+                lines.append(
+                    f"{' ' * indent}{section.name:<{max_name}}:{count: {max_count}d}"
+                )
+            if count and section.subsections:
+                lines.extend(
+                    self._markdown_subsections(
+                        subsections=section.subsections,
+                        counts=counts,
+                        level=level + 1,
+                        parent_count=count,
+                    )
+                )
+        return lines
+
+    def markdown_report(self) -> str:
+        """Generate the markdown report from the specification."""
+        spec = self.markdown_report_spec()
+        lines: list[str] = []
+        indent = 0
+
+        for section in spec:
+            key = section.get_key()
+            counts = self.counts[key]
+            lines.append(f"{section.name}:")
+            lines.extend(
+                self._markdown_subsections(
+                    subsections=section.subsections, counts=counts
+                )
+            )
+
+        return "\n".join(lines)
 
 
 class CleanerTask(DataIssueTask):
