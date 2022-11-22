@@ -200,8 +200,55 @@ def vcard_lookup_key_default():
     )
 
 
+class TwilioMessagingService(models.Model):
+    """
+    A Twilio Messaging Service.
+
+    A messaging service contains multiple Twilio message senders, and allows
+    registration for A2P 10DLC (Application to Person, sending text messages
+    via 10-digit "long codes") in the US.
+
+    https://support.twilio.com/hc/en-us/articles/223181308
+    https://www.twilio.com/docs/messaging/services
+    """
+
+    service_id = models.CharField(
+        max_length=40, unique=True, help_text="Service ID, starts with MG"
+    )
+    friendly_name = models.CharField(
+        max_length=64, help_text="Friendly name of service"
+    )
+    channel = models.CharField(
+        max_length=40,
+        default="unknown",
+        help_text="Which Relay channel uses this service?",
+    )
+    spam = models.BooleanField(
+        default=False, help_text="Service has been identifed as sending spam"
+    )
+    full = models.BooleanField(
+        default=False, help_text="Service is at limit of associated phones"
+    )
+    campaign_use_case = models.CharField(
+        max_length=40, help_text="The US A2P use case code, such as PROXY"
+    )
+    campaign_status = models.CharField(
+        max_length=15,
+        help_text=(
+            "The US A2P campaign status, such as IN_PROGRESS, PENDING, VERIFIED,"
+            " or FAILED"
+        ),
+    )
+    last_checked = models.DateTimeField(
+        null=True, help_text="Last time the service status was checked."
+    )
+
+
 class RelayNumber(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
+    service = models.ForeignKey(
+        TwilioMessagingService, null=True, on_delete=models.SET_NULL
+    )
     number = models.CharField(max_length=15, db_index=True, unique=True)
     location = models.CharField(max_length=255)
     country_code = models.CharField(max_length=2, default="US")
