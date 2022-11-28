@@ -135,13 +135,13 @@ def test_server_storage_cleaner_all_server_storage() -> None:
     expected = """\
 Profiles:
   All: 1
-    Without Server Storage: 0 (  0.0%)
+    Without Server Storage: 0 (0.0%)
 Relay Addresses:
   All: 1
-    Without Server Storage: 0 (  0.0%)
+    Without Server Storage: 0 (0.0%)
 Domain Addresses:
   All: 1
-    Without Server Storage: 0 (  0.0%)"""
+    Without Server Storage: 0 (0.0%)"""
     assert report == expected
 
 
@@ -171,15 +171,15 @@ def test_server_storage_cleaner_some_server_storage() -> None:
     expected = """\
 Profiles:
   All: 2
-    Without Server Storage: 1 ( 50.0%)
+    Without Server Storage: 1 (50.0%)
 Relay Addresses:
   All: 3
-    Without Server Storage: 2 ( 66.7%)
+    Without Server Storage: 2 (66.7%)
       No Data : 2 (100.0%)
       Has Data: 0 (  0.0%)
 Domain Addresses:
   All: 3
-    Without Server Storage: 2 ( 66.7%)
+    Without Server Storage: 2 (66.7%)
       No Data : 2 (100.0%)
       Has Data: 0 (  0.0%)"""
     assert report == expected
@@ -218,17 +218,17 @@ def test_server_storage_cleaner_some_data_to_clear() -> None:
     expected = """\
 Profiles:
   All: 2
-    Without Server Storage: 1 ( 50.0%)
+    Without Server Storage: 1 (50.0%)
 Relay Addresses:
   All: 6
-    Without Server Storage: 5 ( 83.3%)
-      No Data : 2 ( 40.0%)
-      Has Data: 3 ( 60.0%)
+    Without Server Storage: 5 (83.3%)
+      No Data : 2 (40.0%)
+      Has Data: 3 (60.0%)
 Domain Addresses:
   All: 5
-    Without Server Storage: 4 ( 80.0%)
-      No Data : 2 ( 50.0%)
-      Has Data: 2 ( 50.0%)"""
+    Without Server Storage: 4 (80.0%)
+      No Data : 2 (50.0%)
+      Has Data: 2 (50.0%)"""
     assert report == expected
 
     # Clean the data and repeat
@@ -240,18 +240,18 @@ Domain Addresses:
     expected = """\
 Profiles:
   All: 2
-    Without Server Storage: 1 ( 50.0%)
+    Without Server Storage: 1 (50.0%)
 Relay Addresses:
   All: 6
-    Without Server Storage: 5 ( 83.3%)
-      No Data : 2 ( 40.0%)
-      Has Data: 3 ( 60.0%)
+    Without Server Storage: 5 (83.3%)
+      No Data : 2 (40.0%)
+      Has Data: 3 (60.0%)
         Cleaned: 3 (100.0%)
 Domain Addresses:
   All: 5
-    Without Server Storage: 4 ( 80.0%)
-      No Data : 2 ( 50.0%)
-      Has Data: 2 ( 50.0%)
+    Without Server Storage: 4 (80.0%)
+      No Data : 2 (50.0%)
+      Has Data: 2 (50.0%)
         Cleaned: 2 (100.0%)"""
     assert report == expected
 
@@ -346,8 +346,8 @@ def test_missing_profile_cleaner_with_problems() -> None:
     expected = """\
 Users:
   All: 5
-    Has Profile: 4 ( 80.0%)
-    No Profile : 1 ( 20.0%)"""
+    Has Profile: 4 (80.0%)
+    No Profile : 1 (20.0%)"""
     assert report == expected
 
     # Clean the data, check updates
@@ -360,8 +360,8 @@ Users:
     expected = """\
 Users:
   All: 5
-    Has Profile: 4 ( 80.0%)
-    No Profile : 1 ( 20.0%)
+    Has Profile: 4 (80.0%)
+    No Profile : 1 (20.0%)
       Now has Profile: 1 (100.0%)"""
     assert report == expected
 

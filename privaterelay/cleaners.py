@@ -160,9 +160,10 @@ class DataIssueTask:
         if not (any_found or display) and all(cnt == 0 for cnt in subcounts.values()):
             return []
 
-        # Determine widths of names and counts
+        # Determine widths of names, counts, and percents
         max_name = max(len(key) for key in subcounts.keys())
         max_count = max(len(str(cnt)) for cnt in subcounts.values())
+        max_percent = max(len(pct) for pct in percents.values()) if percents else 0
 
         # Construct sections
         lines: list[str] = []
@@ -172,7 +173,8 @@ class DataIssueTask:
             count = subcounts[name]
             if parent_count:
                 lines.append(
-                    f"{' ' * indent}{section.name:<{max_name}}:{count: {max_count}d} ({percents[name]:>6})"
+                    f"{' ' * indent}{section.name:<{max_name}}:{count: {max_count}d}"
+                    f" ({percents[name]:>{max_percent}})"
                 )
             else:
                 lines.append(
