@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from django.conf import settings
-from django.db.models import Count, Q
+from django.db.models import Q
 
 from privaterelay.cleaners import (
     DetectorTask,
@@ -13,7 +13,7 @@ from privaterelay.cleaners import (
     SubSectionSpec,
 )
 
-from .models import twilio_client, RelayNumber, TwilioMessagingService
+from .models import twilio_client, RelayNumber
 
 
 class RelayNumberSyncChecker(DetectorTask):

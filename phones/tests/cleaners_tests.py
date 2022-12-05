@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 from django.utils import timezone
 
 from twilio.rest import Client
 
 from model_bakery import baker
-from typing import Any, Generator
+from typing import Any
 import pytest
 
 from phones.cleaners import RelayNumberSyncChecker
@@ -59,7 +59,7 @@ def setup_relay_number_test_data(
         user = make_phone_test_user()
         real_number = relay_number.replace("+1301", "+1201")
         verification_date = verification_base_date + timedelta(seconds=60 * num)
-        real_phone = baker.make(
+        baker.make(
             RealPhone,
             user=user,
             number=real_number,
