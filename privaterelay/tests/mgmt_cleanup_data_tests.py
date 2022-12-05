@@ -14,7 +14,7 @@ from emails.tests.cleaners_tests import setup_profile_mismatch_test_data
 
 COMMAND_NAME = "cleanup_data"
 MOCK_BASE = f"private_relay.management.commands.{COMMAND_NAME}"
-CLEANERS = {"server-storage", "missing-profile"}
+CLEANERS = {"server-storage", "missing-profile", "relay-numbers"}
 KNOWN_CLEANER = "server-storage"
 
 
@@ -27,7 +27,7 @@ def test_dry_run(caplog) -> None:
     assert "# Summary\n" in output
     assert "# Details\n" not in output
     log = caplog.records[0]
-    assert log.message == "cleanup_data complete, found 0 issues (dry run)."
+    assert log.message == "cleanup_data complete, found 1 issue (dry run)."
     assert not log.cleaned
     assert log.timers.keys() == {"query_s"}
     assert log.tasks.keys() == CLEANERS
@@ -44,7 +44,7 @@ def test_clean(caplog) -> None:
     assert "# Summary\n" in output
     assert "# Details\n" not in output
     log = caplog.records[0]
-    assert log.message == "cleanup_data complete, cleaned 0 of 0 issues."
+    assert log.message == "cleanup_data complete, cleaned 0 of 1 issue."
     assert log.cleaned
     assert log.timers.keys() == {"query_s", "clean_s"}
 
