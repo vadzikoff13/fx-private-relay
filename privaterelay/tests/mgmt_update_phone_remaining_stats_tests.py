@@ -7,22 +7,19 @@ import pytest
 
 from django.conf import settings
 
-pytestmark = pytest.mark.skipif(
-    not settings.PHONES_ENABLED, reason="PHONES_ENABLED is False"
-)
-
-from emails.models import Profile
-
-if settings.PHONES_ENABLED:
-    from phones.tests.models_tests import make_phone_test_user
-
 from api.tests.phones_views_tests import (
     _make_real_phone,
     _make_relay_number,
-    mocked_twilio_client,
 )
+from emails.models import Profile
 from ..management.commands.update_phone_remaining_stats import (
     update_phone_remaining_stats,
+)
+
+if settings.PHONES_ENABLED:
+    from phones.tests.models_tests import make_phone_test_user
+pytestmark = pytest.mark.skipif(
+    not settings.PHONES_ENABLED, reason="PHONES_ENABLED is False"
 )
 
 
