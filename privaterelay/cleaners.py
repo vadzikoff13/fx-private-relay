@@ -119,7 +119,7 @@ class DataIssueTask:
         self,
         subsections: list[SubSectionSpec],
         counts: dict[str, int],
-        level: int = 1,
+        level: int = 0,
         parent_count: Optional[int] = None,
     ) -> list[str]:
         """
@@ -173,12 +173,12 @@ class DataIssueTask:
             count = subcounts[name]
             if parent_count:
                 lines.append(
-                    f"{' ' * indent}{section.name:<{max_name}}:{count: {max_count}d}"
+                    f"{' ' * indent}- {section.name:<{max_name}}:{count: {max_count}d}"
                     f" ({percents[name]:>{max_percent}})"
                 )
             else:
                 lines.append(
-                    f"{' ' * indent}{section.name:<{max_name}}:{count: {max_count}d}"
+                    f"{' ' * indent}- {section.name:<{max_name}}:{count: {max_count}d}"
                 )
             if count and section.subsections:
                 lines.extend(
@@ -196,10 +196,15 @@ class DataIssueTask:
         spec = self.markdown_report_spec()
         lines: list[str] = []
 
+        first = True
         for section in spec:
             key = section.get_key()
             counts = self.counts[key]
-            lines.append(f"{section.name}:")
+            if first:
+                first = False
+            else:
+                lines.append("")
+            lines.append(f"**{section.name}**:")
             lines.extend(
                 self._markdown_subsections(
                     subsections=section.subsections, counts=counts

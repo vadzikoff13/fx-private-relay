@@ -21,8 +21,8 @@ class RelayNumberSyncChecker(DetectorTask):
     slug = "relay-numbers"
     title = "Check if the RelayNumber table is in sync with the Twilio numbers."
     check_description = (
-        "The numbers in the RelayNumber table should be the same as Twilio's"
-        " IncomingPhoneNumber resource."
+        "The numbers in the `RelayNumber` table should be the same as Twilio's"
+        " `IncomingPhoneNumber` resource."
     )
 
     def _get_counts_and_data(self) -> tuple[Counts, CleanupData]:

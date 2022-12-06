@@ -141,10 +141,11 @@ def test_relay_number_sync_checker_no_data() -> None:
     assert checker.clean() == 0
     report = checker.markdown_report()
     expected = """\
-Relay Numbers:
-  All: 0
-Twilio Numbers:
-  All: 0"""
+**Relay Numbers**:
+- All: 0
+
+**Twilio Numbers**:
+- All: 0"""
     assert report == expected
 
 
@@ -200,21 +201,22 @@ def test_relay_number_sync_checker_synced_with_twilio(
     assert checker.clean() == 0
     report = checker.markdown_report()
     expected = """\
-Relay Numbers:
-  All: 7
-    Enabled: 6 (85.7%)
-      Used: 5 (83.3%)
-        Used for Texts Only: 2 (40.0%)
-        Used for Calls Only: 2 (40.0%)
-        Used for Both      : 1 (20.0%)
-Twilio Numbers:
-  All: 8
-    In Both Databases      : 7 (87.5%)
-      Country Code CA: 1 (14.3%)
-      Country Code US: 6 (85.7%)
-    Main Number in Twilio  : 1 (12.5%)
-    Only in Relay Database : 0 ( 0.0%)
-    Only in Twilio Database: 0 ( 0.0%)"""
+**Relay Numbers**:
+- All: 7
+  - Enabled: 6 (85.7%)
+    - Used: 5 (83.3%)
+      - Used for Texts Only: 2 (40.0%)
+      - Used for Calls Only: 2 (40.0%)
+      - Used for Both      : 1 (20.0%)
+
+**Twilio Numbers**:
+- All: 8
+  - In Both Databases      : 7 (87.5%)
+    - Country Code CA: 1 (14.3%)
+    - Country Code US: 6 (85.7%)
+  - Main Number in Twilio  : 1 (12.5%)
+  - Only in Relay Database : 0 ( 0.0%)
+  - Only in Twilio Database: 0 ( 0.0%)"""
     assert report == expected
 
 

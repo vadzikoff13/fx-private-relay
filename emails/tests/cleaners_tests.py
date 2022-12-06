@@ -99,12 +99,14 @@ def test_server_storage_cleaner_no_data() -> None:
     assert cleaner.clean() == 0
     report = cleaner.markdown_report()
     expected = """\
-Profiles:
-  All: 0
-Relay Addresses:
-  All: 0
-Domain Addresses:
-  All: 0"""
+**Profiles**:
+- All: 0
+
+**Relay Addresses**:
+- All: 0
+
+**Domain Addresses**:
+- All: 0"""
     assert report == expected
 
 
@@ -133,15 +135,17 @@ def test_server_storage_cleaner_all_server_storage() -> None:
     assert cleaner.clean() == 0
     report = cleaner.markdown_report()
     expected = """\
-Profiles:
-  All: 1
-    Without Server Storage: 0 (0.0%)
-Relay Addresses:
-  All: 1
-    Without Server Storage: 0 (0.0%)
-Domain Addresses:
-  All: 1
-    Without Server Storage: 0 (0.0%)"""
+**Profiles**:
+- All: 1
+  - Without Server Storage: 0 (0.0%)
+
+**Relay Addresses**:
+- All: 1
+  - Without Server Storage: 0 (0.0%)
+
+**Domain Addresses**:
+- All: 1
+  - Without Server Storage: 0 (0.0%)"""
     assert report == expected
 
 
@@ -169,19 +173,21 @@ def test_server_storage_cleaner_some_server_storage() -> None:
     }
     report = cleaner.markdown_report()
     expected = """\
-Profiles:
-  All: 2
-    Without Server Storage: 1 (50.0%)
-Relay Addresses:
-  All: 3
-    Without Server Storage: 2 (66.7%)
-      No Data : 2 (100.0%)
-      Has Data: 0 (  0.0%)
-Domain Addresses:
-  All: 3
-    Without Server Storage: 2 (66.7%)
-      No Data : 2 (100.0%)
-      Has Data: 0 (  0.0%)"""
+**Profiles**:
+- All: 2
+  - Without Server Storage: 1 (50.0%)
+
+**Relay Addresses**:
+- All: 3
+  - Without Server Storage: 2 (66.7%)
+    - No Data : 2 (100.0%)
+    - Has Data: 0 (  0.0%)
+
+**Domain Addresses**:
+- All: 3
+  - Without Server Storage: 2 (66.7%)
+    - No Data : 2 (100.0%)
+    - Has Data: 0 (  0.0%)"""
     assert report == expected
 
     # Clean the data, report is the same
@@ -216,19 +222,21 @@ def test_server_storage_cleaner_some_data_to_clear() -> None:
     }
     report = cleaner.markdown_report()
     expected = """\
-Profiles:
-  All: 2
-    Without Server Storage: 1 (50.0%)
-Relay Addresses:
-  All: 6
-    Without Server Storage: 5 (83.3%)
-      No Data : 2 (40.0%)
-      Has Data: 3 (60.0%)
-Domain Addresses:
-  All: 5
-    Without Server Storage: 4 (80.0%)
-      No Data : 2 (50.0%)
-      Has Data: 2 (50.0%)"""
+**Profiles**:
+- All: 2
+  - Without Server Storage: 1 (50.0%)
+
+**Relay Addresses**:
+- All: 6
+  - Without Server Storage: 5 (83.3%)
+    - No Data : 2 (40.0%)
+    - Has Data: 3 (60.0%)
+
+**Domain Addresses**:
+- All: 5
+  - Without Server Storage: 4 (80.0%)
+    - No Data : 2 (50.0%)
+    - Has Data: 2 (50.0%)"""
     assert report == expected
 
     # Clean the data and repeat
@@ -238,21 +246,23 @@ Domain Addresses:
     assert cleaner.counts["domain_addresses"]["cleaned"] == 2
     report = cleaner.markdown_report()
     expected = """\
-Profiles:
-  All: 2
-    Without Server Storage: 1 (50.0%)
-Relay Addresses:
-  All: 6
-    Without Server Storage: 5 (83.3%)
-      No Data : 2 (40.0%)
-      Has Data: 3 (60.0%)
-        Cleaned: 3 (100.0%)
-Domain Addresses:
-  All: 5
-    Without Server Storage: 4 (80.0%)
-      No Data : 2 (50.0%)
-      Has Data: 2 (50.0%)
-        Cleaned: 2 (100.0%)"""
+**Profiles**:
+- All: 2
+  - Without Server Storage: 1 (50.0%)
+
+**Relay Addresses**:
+- All: 6
+  - Without Server Storage: 5 (83.3%)
+    - No Data : 2 (40.0%)
+    - Has Data: 3 (60.0%)
+      - Cleaned: 3 (100.0%)
+
+**Domain Addresses**:
+- All: 5
+  - Without Server Storage: 4 (80.0%)
+    - No Data : 2 (50.0%)
+    - Has Data: 2 (50.0%)
+      - Cleaned: 2 (100.0%)"""
     assert report == expected
 
     # Check that data is cleaned or remains as desired
@@ -305,8 +315,8 @@ def test_missing_profile_cleaner_no_data() -> None:
     assert task.clean() == 0
     report = task.markdown_report()
     expected = """\
-Users:
-  All: 0"""
+**Users**:
+- All: 0"""
     assert report == expected
 
 
@@ -324,10 +334,10 @@ def test_missing_profile_cleaner_with_users() -> None:
     assert task.clean() == 0
     report = task.markdown_report()
     expected = """\
-Users:
-  All: 4
-    Has Profile: 4 (100.0%)
-    No Profile : 0 (  0.0%)"""
+**Users**:
+- All: 4
+  - Has Profile: 4 (100.0%)
+  - No Profile : 0 (  0.0%)"""
     assert report == expected
 
 
@@ -344,10 +354,10 @@ def test_missing_profile_cleaner_with_problems() -> None:
     }
     report = task.markdown_report()
     expected = """\
-Users:
-  All: 5
-    Has Profile: 4 (80.0%)
-    No Profile : 1 (20.0%)"""
+**Users**:
+- All: 5
+  - Has Profile: 4 (80.0%)
+  - No Profile : 1 (20.0%)"""
     assert report == expected
 
     # Clean the data, check updates
@@ -358,11 +368,11 @@ Users:
     }
     report = task.markdown_report()
     expected = """\
-Users:
-  All: 5
-    Has Profile: 4 (80.0%)
-    No Profile : 1 (20.0%)
-      Now has Profile: 1 (100.0%)"""
+**Users**:
+- All: 5
+  - Has Profile: 4 (80.0%)
+  - No Profile : 1 (20.0%)
+    - Now has Profile: 1 (100.0%)"""
     assert report == expected
 
     # Check that all users have profiles

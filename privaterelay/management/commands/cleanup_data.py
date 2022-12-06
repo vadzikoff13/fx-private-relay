@@ -251,7 +251,7 @@ class Command(BaseCommand):
 
         report = ["", "# Summary"]
         if not cleaned:
-            report.append("Detected issues only. Use --clean to fix issues.")
+            report.append("Detected issues only. Use `--clean` to fix issues.")
         report.append("")
 
         # Pick summary table columns
