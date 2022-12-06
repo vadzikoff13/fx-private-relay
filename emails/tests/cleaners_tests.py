@@ -12,11 +12,15 @@ from emails.models import DomainAddress, RelayAddress
 from .models_tests import make_premium_test_user, make_storageless_test_user
 
 
-def setup_server_storage_test_data(
-    add_user_without_storage: bool = False,
-    add_server_data_for_user_without_storage: bool = False,
-) -> None:
+@pytest.fixture
+def setup_server_storage_test_data(request, db) -> None:
     """Setup users and addresses for testing."""
+    config_mark = request.node.get_closest_marker("relay_test_config")
+    config = config_mark.kwargs if config_mark else {}
+    add_user_without_storage = config.get("add_user_without_storage", False)
+    add_server_data_for_user_without_storage = config.get(
+        "add_server_data_for_user_without_storage", False
+    )
 
     # Create a user with server storage and addresses
     user_with_server_storage = make_premium_test_user()
@@ -97,23 +101,12 @@ def test_server_storage_cleaner_no_data() -> None:
         },
     }
     assert cleaner.clean() == 0
-    report = cleaner.markdown_report()
-    expected = """\
-**Profiles**:
-- All: 0
-
-**Relay Addresses**:
-- All: 0
-
-**Domain Addresses**:
-- All: 0"""
-    assert report == expected
 
 
-@pytest.mark.django_db
-def test_server_storage_cleaner_all_server_storage() -> None:
+def test_server_storage_cleaner_all_server_storage(
+    setup_server_storage_test_data,
+) -> None:
     """ServerStorageCleaner detects that all users have server storage."""
-    setup_server_storage_test_data()
     cleaner = ServerStorageCleaner()
     assert cleaner.issues() == 0
     assert cleaner.counts == {
@@ -133,26 +126,13 @@ def test_server_storage_cleaner_all_server_storage() -> None:
         },
     }
     assert cleaner.clean() == 0
-    report = cleaner.markdown_report()
-    expected = """\
-**Profiles**:
-- All: 1
-  - Without Server Storage: 0 (0.0%)
-
-**Relay Addresses**:
-- All: 1
-  - Without Server Storage: 0 (0.0%)
-
-**Domain Addresses**:
-- All: 1
-  - Without Server Storage: 0 (0.0%)"""
-    assert report == expected
 
 
-@pytest.mark.django_db
-def test_server_storage_cleaner_some_server_storage() -> None:
+@pytest.mark.relay_test_config(add_user_without_storage=True)
+def test_server_storage_cleaner_some_server_storage(
+    setup_server_storage_test_data,
+) -> None:
     """ServerStorageCleaner detects that some users have server storage."""
-    setup_server_storage_test_data(add_user_without_storage=True)
     cleaner = ServerStorageCleaner()
     assert cleaner.issues() == 0
     assert cleaner.counts == {
@@ -196,12 +176,13 @@ def test_server_storage_cleaner_some_server_storage() -> None:
     assert report2 == expected
 
 
-@pytest.mark.django_db
-def test_server_storage_cleaner_some_data_to_clear() -> None:
+@pytest.mark.relay_test_config(
+    add_user_without_storage=True, add_server_data_for_user_without_storage=True
+)
+def test_server_storage_cleaner_some_data_to_clear(
+    setup_server_storage_test_data,
+) -> None:
     """ServerStorageCleaner detects and clears data."""
-    setup_server_storage_test_data(
-        add_user_without_storage=True, add_server_data_for_user_without_storage=True
-    )
     cleaner = ServerStorageCleaner()
     assert cleaner.issues() == 5
     assert cleaner.counts == {
@@ -289,8 +270,13 @@ def test_server_storage_cleaner_some_data_to_clear() -> None:
     assert cleaner.clean() == 5
 
 
-def setup_profile_mismatch_test_data(add_problems=False):
+@pytest.fixture
+def setup_profile_mismatch_test_data(db, request):
     """Setup users and profiles for testing."""
+    config_mark = request.node.get_closest_marker("relay_test_config")
+    config = config_mark.kwargs if config_mark else {}
+    add_problems = config.get("add_problems", False)
+
     baker.make(User, email="superuser@example.com", is_superuser=True)
     baker.make(User, email="old_su@example.com", is_superuser=True, is_active=False)
     baker.make(User, email="old_user@example.com", is_active=False)
@@ -313,18 +299,10 @@ def test_missing_profile_cleaner_no_data() -> None:
         "users": {"all": 0, "has_profile": 0, "no_profile": 0},
     }
     assert task.clean() == 0
-    report = task.markdown_report()
-    expected = """\
-**Users**:
-- All: 0"""
-    assert report == expected
 
 
-@pytest.mark.django_db
-def test_missing_profile_cleaner_with_users() -> None:
+def test_missing_profile_cleaner_with_users(setup_profile_mismatch_test_data) -> None:
     """MissingProfileCleaner works when data is consistant."""
-    setup_profile_mismatch_test_data()
-
     task = MissingProfileCleaner()
     assert task.issues() == 0
     assert task.counts == {
@@ -332,20 +310,13 @@ def test_missing_profile_cleaner_with_users() -> None:
         "users": {"all": 4, "has_profile": 4, "no_profile": 0},
     }
     assert task.clean() == 0
-    report = task.markdown_report()
-    expected = """\
-**Users**:
-- All: 4
-  - Has Profile: 4 (100.0%)
-  - No Profile : 0 (  0.0%)"""
-    assert report == expected
 
 
-@pytest.mark.django_db
-def test_missing_profile_cleaner_with_problems() -> None:
+@pytest.mark.relay_test_config(add_problems=True)
+def test_missing_profile_cleaner_with_problems(
+    setup_profile_mismatch_test_data,
+) -> None:
     """MissingProfileCleaner detects users without profiles, and can add them."""
-    setup_profile_mismatch_test_data(add_problems=True)
-
     task = MissingProfileCleaner()
     assert task.issues() == 1
     assert task.counts == {

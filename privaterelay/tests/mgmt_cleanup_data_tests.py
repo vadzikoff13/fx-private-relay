@@ -6,11 +6,12 @@ Non-empty databases are tested in the cleaner tests.
 """
 from io import StringIO
 
+from django.contrib.auth.models import User
 from django.core.management import call_command
 
+from model_bakery import baker
 import pytest
 
-from emails.tests.cleaners_tests import setup_profile_mismatch_test_data
 
 COMMAND_NAME = "cleanup_data"
 MOCK_BASE = f"private_relay.management.commands.{COMMAND_NAME}"
@@ -114,7 +115,9 @@ def test_selected_cleaner(caplog) -> None:
 @pytest.mark.django_db
 def test_issues_cleaned_by_detector() -> None:
     """When a detector finds an issue, it cleans it."""
-    setup_profile_mismatch_test_data(add_problems=True)
+    user = baker.make(User, email="no-profile@example.com")
+    user.profile.delete()
+
     out = StringIO()
     call_command(
         COMMAND_NAME, "--missing-profile", "--clean", "--verbosity=2", stdout=out
