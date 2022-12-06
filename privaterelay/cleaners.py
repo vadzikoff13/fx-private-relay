@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional, Sequence
+from typing import Any, Optional
 
 Counts = dict[str, dict[str, int]]
 CleanupData = dict[str, Any]
@@ -195,7 +195,6 @@ class DataIssueTask:
         """Generate the markdown report from the specification."""
         spec = self.markdown_report_spec()
         lines: list[str] = []
-        indent = 0
 
         for section in spec:
             key = section.get_key()

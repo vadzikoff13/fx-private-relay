@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from django.conf import settings
-from django.db.models import Q
+from django.db.models import Count, Q
 
 from privaterelay.cleaners import (
     DetectorTask,
@@ -33,6 +33,7 @@ class RelayNumberSyncChecker(DetectorTask):
           IncomingPhoneNumber.
         * cleanup_data: two-element dict of RelayNumber entries to...
         """
+        relay_all = RelayNumber.objects.count()
         disabled = RelayNumber.objects.filter(enabled=False)
         enabled = RelayNumber.objects.filter(enabled=True)
         q_used_texts = Q(texts_forwarded__gt=0) | Q(texts_blocked__gt=0)
@@ -41,6 +42,15 @@ class RelayNumberSyncChecker(DetectorTask):
         used_both = enabled.filter(q_used_texts & q_used_calls)
         used_texts = enabled.filter(q_used_texts & ~q_used_calls)
         used_calls = enabled.filter(q_used_calls & ~q_used_texts)
+        count_by_country_code = {"all": relay_all}
+        country_code_count_rows = (
+            RelayNumber.objects.values("country_code")
+            .annotate(Count("id"))
+            .order_by("country_code")
+        )
+        for row in country_code_count_rows:
+            code = row["country_code"] or "unknown"
+            count_by_country_code[code] = row["id__count"]
 
         relay_numbers = set(RelayNumber.objects.values_list("number", flat=True))
 
@@ -63,11 +73,11 @@ class RelayNumberSyncChecker(DetectorTask):
 
         counts: Counts = {
             "summary": {
-                "ok": RelayNumber.objects.count(),
+                "ok": relay_all,
                 "needs_cleaning": needs_cleaning,
             },
             "relay_numbers": {
-                "all": RelayNumber.objects.count(),
+                "all": relay_all,
                 "disabled": disabled.count(),
                 "enabled": enabled.count(),
                 "used": used.count(),
@@ -75,6 +85,7 @@ class RelayNumberSyncChecker(DetectorTask):
                 "used_texts": used_texts.count(),
                 "used_calls": used_calls.count(),
             },
+            "relay_numbers_by_country_code": count_by_country_code,
             "twilio_numbers": {
                 "all": len(twilio_numbers),
                 "main_number": 1 if main_in_twilio else 0,
@@ -101,6 +112,11 @@ class RelayNumberSyncChecker(DetectorTask):
                 - Used for Texts Only
                 - Used for Calls Only
                 - Used for Both
+        - Relay Numbers by Country Code
+          - All
+            - CA
+            - US
+            - unknown
         - Twilio Numbers
           - All
             - Main Number
@@ -130,8 +146,17 @@ class RelayNumberSyncChecker(DetectorTask):
         relay_used.subsections = [relay_used_texts, relay_used_calls, relay_used_both]
         twilio_all.subsections = [main_number]
         sync_all.subsections = [in_both, main_number_sync, only_relay, only_twilio]
+
+        # Dynamically add the country code subsections
+        cc_all = SubSectionSpec("All", is_total_count=True)
+        if self._counts:
+            for code in self._counts["relay_numbers_by_country_code"]:
+                if code != "all":
+                    cc_all.subsections.append(SubSectionSpec(code, key=code))
+
         return [
             SectionSpec("Relay Numbers", subsections=[relay_all]),
+            SectionSpec("Relay Numbers by Country Code", subsections=[cc_all]),
             SectionSpec("Twilio Numbers", subsections=[twilio_all]),
             SectionSpec("Sync Check", key="sync_check", subsections=[sync_all]),
         ]
