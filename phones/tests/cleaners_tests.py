@@ -13,7 +13,7 @@ from model_bakery import baker
 from typing import Any
 import pytest
 
-from phones.cleaners import RelayNumberSyncChecker
+from phones.cleaners import Counts, RelayNumberSyncChecker
 from phones.models import RealPhone, RelayNumber
 
 from .models_tests import make_phone_test_user
@@ -21,7 +21,10 @@ from .models_tests import make_phone_test_user
 
 @pytest.fixture(autouse=True)
 def mock_twilio_settings(settings) -> None:
+    """Override settings to test Twilio accounts"""
+    settings.PHONES_ENABLED = True
     settings.TWILIO_ACCOUNT_SID = f"AC{uuid4().hex}"
+    settings.TWILIO_AUTH_TOKEN = uuid4().hex
     settings.TWILIO_SMS_APPLICATION_SID = f"AP{uuid4().hex}"
     settings.TWILIO_MESSAGING_SERVICE_SID = f"MG{uuid4().hex}"
     settings.TWILIO_MAIN_NUMBER = "+12005550000"
@@ -34,9 +37,9 @@ def setup_relay_number_test_data(
     request,
     settings,
 ) -> None:
-    """Setup Relay Numbers and Twilio Response for testing."""
-    test_mark = request.node.get_closest_marker("relay_test_data")
-    config = test_mark.kwargs if test_mark else {}
+    """Setup Relay Numbers and mock Twilio responses for testing."""
+    config_mark = request.node.get_closest_marker("relay_test_config")
+    config = config_mark.kwargs if config_mark else {}
     main_number_in_twilio = config.get("main_number_in_twilio", True)
     remove_number_from_twilio = config.get("remove_number_from_twilio", False)
     remove_number_from_relay = config.get("remove_number_from_relay", False)
@@ -76,8 +79,8 @@ def setup_relay_number_test_data(
             verified=True,
             country_code=country_code,
         )
-        in_relay = test_data.pop("in_relay", True)
-        in_twilio = test_data.pop("in_twilio", True)
+        in_relay = data.pop("in_relay", True)
+        in_twilio = data.pop("in_twilio", True)
         if in_relay:
             baker.make(RelayNumber, user=user, number=relay_number, **data)
         if in_twilio:
@@ -106,12 +109,9 @@ def create_mock_number_instance(phone_number: str, settings) -> Mock:
     )
 
 
-@pytest.mark.django_db
-def test_relay_number_sync_checker_no_data() -> None:
-    """RelayNumberSyncChecker works on an empty database."""
-    checker = RelayNumberSyncChecker()
-    assert checker.issues() == 1
-    assert checker.counts == {
+def get_empty_counts() -> Counts:
+    """Return the counts when Relay and Twilio are empty."""
+    return {
         "summary": {"ok": 0, "needs_cleaning": 1},
         "relay_numbers": {
             "all": 0,
@@ -122,9 +122,7 @@ def test_relay_number_sync_checker_no_data() -> None:
             "used_texts": 0,
             "used_calls": 0,
         },
-        "relay_numbers_by_country_code": {"all": 0},
-        "twilio_numbers": {"all": 0, "main_number": 0},
-        "sync_check": {
+        "twilio_numbers": {
             "all": 0,
             "in_both_db": 0,
             "main_number": 0,
@@ -132,66 +130,64 @@ def test_relay_number_sync_checker_no_data() -> None:
             "only_twilio_db": 0,
         },
     }
+
+
+@pytest.mark.django_db
+def test_relay_number_sync_checker_no_data() -> None:
+    """RelayNumberSyncChecker works on an empty database."""
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 1
+    assert checker.counts == get_empty_counts()
     assert checker.clean() == 0
     report = checker.markdown_report()
     expected = """\
 Relay Numbers:
   All: 0
-Relay Numbers by Country Code:
-  All: 0
 Twilio Numbers:
-  All: 0
-Sync Check:
   All: 0"""
     assert report == expected
 
 
 @pytest.mark.django_db
 def test_relay_number_sync_checker_just_main(mock_twilio_client, settings) -> None:
-    """RelayNumberSyncChecker works on an empty database."""
+    """RelayNumberSyncChecker notes when just the main number is in Twilio."""
     mock_twilio_client.incoming_phone_numbers.list.return_value = [
         create_mock_number_instance(settings.TWILIO_MAIN_NUMBER, settings)
     ]
     checker = RelayNumberSyncChecker()
     assert checker.issues() == 0
-    assert checker.counts == {
-        "summary": {"ok": 0, "needs_cleaning": 0},
+    expected_counts = get_empty_counts()
+    expected_counts["summary"]["ok"] = 1
+    expected_counts["summary"]["needs_cleaning"] = 0
+    expected_counts["twilio_numbers"]["all"] = 1
+    expected_counts["twilio_numbers"]["main_number"] = 1
+    assert checker.counts == expected_counts
+    assert checker.clean() == 0
+
+
+def get_synced_counts() -> Counts:
+    """Return the counts when Relay is synced with Twilio"""
+    return {
+        "summary": {"ok": 8, "needs_cleaning": 0},
         "relay_numbers": {
-            "all": 0,
-            "disabled": 0,
-            "enabled": 0,
-            "used": 0,
-            "used_both": 0,
-            "used_texts": 0,
-            "used_calls": 0,
+            "all": 7,
+            "disabled": 1,
+            "enabled": 6,
+            "used": 5,
+            "used_calls": 2,
+            "used_texts": 2,
+            "used_both": 1,
         },
-        "relay_numbers_by_country_code": {"all": 0},
-        "twilio_numbers": {"all": 1, "main_number": 1},
-        "sync_check": {
-            "all": 1,
-            "in_both_db": 0,
+        "twilio_numbers": {
+            "all": 8,
+            "in_both_db": 7,
             "main_number": 1,
             "only_relay_db": 0,
             "only_twilio_db": 0,
+            "cc_US": 6,
+            "cc_CA": 1,
         },
     }
-    assert checker.clean() == 0
-    report = checker.markdown_report()
-    expected = """\
-Relay Numbers:
-  All: 0
-Relay Numbers by Country Code:
-  All: 0
-Twilio Numbers:
-  All: 1
-    Main Number: 1 (100.0%)
-Sync Check:
-  All: 1
-    In Both Databases      : 0 (  0.0%)
-    Main Number in Twilio  : 1 (100.0%)
-    Only in Relay Database : 0 (  0.0%)
-    Only in Twilio Database: 0 (  0.0%)"""
-    assert report == expected
 
 
 def test_relay_number_sync_checker_synced_with_twilio(
@@ -200,27 +196,7 @@ def test_relay_number_sync_checker_synced_with_twilio(
     """RelayNumberSyncChecker detects that all phone numbers are synced."""
     checker = RelayNumberSyncChecker()
     assert checker.issues() == 0
-    assert checker.counts == {
-        "summary": {"ok": 7, "needs_cleaning": 0},
-        "relay_numbers": {
-            "all": 7,
-            "disabled": 1,
-            "enabled": 6,
-            "used": 5,
-            "used_calls": 2,
-            "used_texts": 2,
-            "used_both": 1,
-        },
-        "relay_numbers_by_country_code": {"all": 7, "CA": 1, "US": 6},
-        "twilio_numbers": {"all": 8, "main_number": 1},
-        "sync_check": {
-            "all": 8,
-            "in_both_db": 7,
-            "main_number": 1,
-            "only_relay_db": 0,
-            "only_twilio_db": 0,
-        },
-    }
+    assert checker.counts == get_synced_counts()
     assert checker.clean() == 0
     report = checker.markdown_report()
     expected = """\
@@ -231,71 +207,66 @@ Relay Numbers:
         Used for Texts Only: 2 (40.0%)
         Used for Calls Only: 2 (40.0%)
         Used for Both      : 1 (20.0%)
-Relay Numbers by Country Code:
-  All: 7
-    CA: 1 (14.3%)
-    US: 6 (85.7%)
 Twilio Numbers:
   All: 8
-    Main Number: 1 (12.5%)
-Sync Check:
-  All: 8
     In Both Databases      : 7 (87.5%)
+      Country Code CA: 1 (14.3%)
+      Country Code US: 6 (85.7%)
     Main Number in Twilio  : 1 (12.5%)
     Only in Relay Database : 0 ( 0.0%)
     Only in Twilio Database: 0 ( 0.0%)"""
     assert report == expected
 
 
-@pytest.mark.relay_test_data(main_number_in_twilio=False)
+@pytest.mark.relay_test_config(main_number_in_twilio=False)
 def test_relay_number_sync_checker_main_not_in_twilio(
     setup_relay_number_test_data,
 ) -> None:
-    """RelayNumberSyncChecker detects that all phone numbers are synced."""
+    """RelayNumberSyncChecker detects when the main number is not in Twilio."""
     checker = RelayNumberSyncChecker()
     assert checker.issues() == 1
-    assert checker.counts == {
-        "summary": {"ok": 7, "needs_cleaning": 1},
-        "relay_numbers": {
-            "all": 7,
-            "disabled": 1,
-            "enabled": 6,
-            "used": 5,
-            "used_both": 1,
-            "used_texts": 2,
-            "used_calls": 2,
-        },
-        "relay_numbers_by_country_code": {"CA": 1, "US": 6, "all": 7},
-        "twilio_numbers": {"all": 7, "main_number": 0},
-        "sync_check": {
-            "all": 7,
-            "in_both_db": 7,
-            "main_number": 0,
-            "only_relay_db": 0,
-            "only_twilio_db": 0,
-        },
-    }
+    expected_counts = get_synced_counts()
+    expected_counts["summary"]["needs_cleaning"] += 1
+    expected_counts["summary"]["ok"] -= 1
+    expected_counts["twilio_numbers"]["all"] -= 1
+    expected_counts["twilio_numbers"]["main_number"] = 0
+    assert checker.counts == expected_counts
     assert checker.clean() == 0
-    report = checker.markdown_report()
-    expected = """\
-Relay Numbers:
-  All: 7
-    Enabled: 6 (85.7%)
-      Used: 5 (83.3%)
-        Used for Texts Only: 2 (40.0%)
-        Used for Calls Only: 2 (40.0%)
-        Used for Both      : 1 (20.0%)
-Relay Numbers by Country Code:
-  All: 7
-    CA: 1 (14.3%)
-    US: 6 (85.7%)
-Twilio Numbers:
-  All: 7
-    Main Number: 0 (0.0%)
-Sync Check:
-  All: 7
-    In Both Databases      : 7 (100.0%)
-    Main Number in Twilio  : 0 (  0.0%)
-    Only in Relay Database : 0 (  0.0%)
-    Only in Twilio Database: 0 (  0.0%)"""
-    assert report == expected
+
+
+@pytest.mark.relay_test_config(remove_number_from_twilio=True)
+def test_relay_number_sync_checker_relay_number_not_in_twilio(
+    setup_relay_number_test_data,
+) -> None:
+    """RelayNumberSyncChecker detects when a RelayNumber is not in Twilio."""
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 1
+    expected_counts = get_synced_counts()
+    expected_counts["summary"]["needs_cleaning"] += 1
+    expected_counts["summary"]["ok"] -= 1
+    expected_counts["twilio_numbers"]["cc_US"] -= 1
+    expected_counts["twilio_numbers"]["in_both_db"] -= 1
+    expected_counts["twilio_numbers"]["only_relay_db"] += 1
+    assert checker.counts == expected_counts
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(remove_number_from_relay=True)
+def test_relay_number_sync_checker_twilio_number_not_in_relay(
+    setup_relay_number_test_data,
+) -> None:
+    """RelayNumberSyncChecker detects when a Twilio Number is not a RelayNumber."""
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 1
+    expected_counts = get_synced_counts()
+    expected_counts["summary"]["needs_cleaning"] += 1
+    expected_counts["summary"]["ok"] -= 1
+    expected_counts["relay_numbers"]["all"] -= 1
+    expected_counts["relay_numbers"]["enabled"] -= 1
+    expected_counts["relay_numbers"]["used"] -= 1
+    expected_counts["relay_numbers"]["used_texts"] -= 1
+    expected_counts["twilio_numbers"]["cc_US"] -= 1
+    expected_counts["twilio_numbers"]["in_both_db"] -= 1
+    expected_counts["twilio_numbers"]["only_twilio_db"] += 1
+    assert checker.counts == expected_counts
+    assert checker.clean() == 0
