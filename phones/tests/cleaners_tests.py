@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from phones.cleaners import Counts, RelayNumberSyncChecker
-from phones.models import RealPhone, RelayNumber
+from phones.models import RealPhone, RelayNumber, TwilioMessagingService
 
 from .models_tests import make_phone_test_user
 
@@ -38,20 +38,43 @@ def setup_relay_number_test_data(
     settings,
 ) -> None:
     """Setup Relay Numbers and mock Twilio responses for testing."""
+
+    # Load per-test configuration via marks
     config_mark = request.node.get_closest_marker("relay_test_config")
     config = config_mark.kwargs if config_mark else {}
     main_number_in_twilio = config.get("main_number_in_twilio", True)
     remove_number_from_twilio = config.get("remove_number_from_twilio", False)
     remove_number_from_relay = config.get("remove_number_from_relay", False)
 
+    # Make all objects created in the past
     verification_base_date = timezone.now() - timedelta(days=60)
+
+    # Create TwilioMessagingService objects and related Twilio mock objects
+    twilio_services: list[TwilioMessagingService] = []
+    mock_twilio_services: list[Mock] = []
+    service_data: list[dict[str, Any]] = [
+        {},
+        {},
+    ]
+    for num, data in enumerate(service_data):
+        twilio_service = baker.make(
+            TwilioMessagingService,
+            service_id=f"MG{uuid4().hex}",
+            friendly_name=f"Relay Service {num}",
+            campaign_use_case="PROXY",
+            campaign_status="VERIFIED",
+            last_checked=verification_base_date,
+        )
+        twilio_services.append(twilio_service)
+        mock_twilio_service = create_mock_service(twilio_service.service_id, settings)
+        mock_twilio_services.append(mock_twilio_service)
+    mock_twilio_client.messaging.v1.services.list.return_value = mock_twilio_services
+
     twilio_objects: list[Mock] = []
     if main_number_in_twilio:
-        twilio_objects.append(
-            create_mock_number_instance(settings.TWILIO_MAIN_NUMBER, settings)
-        )
+        twilio_objects.append(create_mock_number(settings.TWILIO_MAIN_NUMBER, settings))
 
-    test_data: dict[str, dict[str, Any]] = {
+    number_data: dict[str, dict[str, Any]] = {
         "+13015550001": {},
         "+13015550002": {"texts_forwarded": 1},
         "+13015550003": {"texts_blocked": 1},
@@ -62,15 +85,16 @@ def setup_relay_number_test_data(
     }
 
     if remove_number_from_relay:
-        test_data["+13015550002"]["in_relay"] = False
+        number_data["+13015550002"]["in_relay"] = False
     if remove_number_from_twilio:
-        test_data["+13015550003"]["in_twilio"] = False
+        number_data["+13015550003"]["in_twilio"] = False
 
-    for num, (relay_number, data) in enumerate(test_data.items()):
+    for num, (relay_number, data) in enumerate(number_data.items()):
         user = make_phone_test_user()
         real_number = relay_number.replace("+1301", "+1201").replace("+1306", "+1639")
         verification_date = verification_base_date + timedelta(seconds=60 * num)
         country_code = data.pop("country_code", "US")
+        service_num = data.pop("service_num", 0)
         baker.make(
             RealPhone,
             user=user,
@@ -81,14 +105,39 @@ def setup_relay_number_test_data(
         )
         in_relay = data.pop("in_relay", True)
         in_twilio = data.pop("in_twilio", True)
+        twilio_number = create_mock_number(relay_number, settings)
         if in_relay:
             baker.make(RelayNumber, user=user, number=relay_number, **data)
         if in_twilio:
-            twilio_objects.append(create_mock_number_instance(relay_number, settings))
+            twilio_objects.append(twilio_number)
+        if service_num is not None:
+            service = mock_twilio_services[service_num]
+            service.phone_numbers.list.return_value.append(twilio_number)
+
     mock_twilio_client.incoming_phone_numbers.list.return_value = twilio_objects
 
 
-def create_mock_number_instance(phone_number: str, settings) -> Mock:
+def create_mock_service(service_id: str, settings) -> Mock:
+    """
+    Create a mock ServiceInstance.
+
+    Omitted properties: area_code_geomatch, date_created, date_updated,
+    fallback_method, fallback_to_long_code, fallback_url, inbound_method,
+    inbound_request_url, links, mms_converter, scan_message_content,
+    smart_encoding, sticky_sender, synchronous_validation, url, validity_period
+    """
+    service = Mock(
+        account_sid=settings.TWILIO_ACCOUNT_SID,
+        sid=service_id,
+        status_callback=f"{settings.SITE_ORIGIN}/api/v1/sms_status",
+        us_app_to_person_registered=True,
+        usecase="discussion",
+    )
+    service.phone_numbers.list.return_value = []
+    return service
+
+
+def create_mock_number(phone_number: str, settings) -> Mock:
     """
     Create a mock IncomingPhoneNumberInstance.
 
@@ -129,6 +178,12 @@ def get_empty_counts() -> Counts:
             "only_relay_db": 0,
             "only_twilio_db": 0,
         },
+        "twilio_messaging_services": {
+            "all": 0,
+            "in_both_db": 0,
+            "only_relay_db": 0,
+            "only_twilio_db": 0,
+        },
     }
 
 
@@ -145,6 +200,9 @@ def test_relay_number_sync_checker_no_data() -> None:
 - All: 0
 
 **Twilio Numbers**:
+- All: 0
+
+**Twilio Messaging Services**:
 - All: 0"""
     assert report == expected
 
@@ -153,7 +211,7 @@ def test_relay_number_sync_checker_no_data() -> None:
 def test_relay_number_sync_checker_just_main(mock_twilio_client, settings) -> None:
     """RelayNumberSyncChecker notes when just the main number is in Twilio."""
     mock_twilio_client.incoming_phone_numbers.list.return_value = [
-        create_mock_number_instance(settings.TWILIO_MAIN_NUMBER, settings)
+        create_mock_number(settings.TWILIO_MAIN_NUMBER, settings)
     ]
     checker = RelayNumberSyncChecker()
     assert checker.issues() == 0
@@ -188,6 +246,12 @@ def get_synced_counts() -> Counts:
             "cc_US": 6,
             "cc_CA": 1,
         },
+        "twilio_messaging_services": {
+            "all": 2,
+            "in_both_db": 2,
+            "only_relay_db": 0,
+            "only_twilio_db": 0,
+        },
     }
 
 
@@ -216,7 +280,13 @@ def test_relay_number_sync_checker_synced_with_twilio(
     - Country Code US: 6 (85.7%)
   - Main Number in Twilio  : 1 (12.5%)
   - Only in Relay Database : 0 ( 0.0%)
-  - Only in Twilio Database: 0 ( 0.0%)"""
+  - Only in Twilio Database: 0 ( 0.0%)
+
+**Twilio Messaging Services**:
+- All: 2
+  - In Both Databases      : 2 (100.0%)
+  - Only in Relay Database : 0 (  0.0%)
+  - Only in Twilio Database: 0 (  0.0%)"""
     assert report == expected
 
 

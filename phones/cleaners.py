@@ -14,7 +14,7 @@ from privaterelay.cleaners import (
     SubSectionSpec,
 )
 
-from .models import twilio_client, RelayNumber
+from .models import twilio_client, RelayNumber, TwilioMessagingService
 
 
 class RelayNumberSyncChecker(DetectorTask):
@@ -45,14 +45,24 @@ class RelayNumberSyncChecker(DetectorTask):
         used_texts = enabled.filter(q_used_texts & ~q_used_calls)
         used_calls = enabled.filter(q_used_calls & ~q_used_texts)
 
-        # Collect all the RelayNumbers and their country code
-        country_code = {
-            number: country_code
-            for number, country_code in RelayNumber.objects.values_list(
-                "number", "country_code"
-            )
+        # Collect the TwilioMessagingService service IDs
+        relay_service_ids = {
+            service.id: service for service in TwilioMessagingService.objects.all()
         }
-        relay_numbers = set(country_code.keys())
+        relay_services = set(
+            service.service_id for service in relay_service_ids.values()
+        )
+
+        # Collect all the RelayNumbers, their country code, and their service ID
+        country_code_for_number: dict[str, str] = {}
+        service_id_for_number: dict[str, str] = {}
+        for number, country_code, service_id in RelayNumber.objects.values_list(
+            "number", "country_code", "service_id"
+        ):
+            country_code_for_number[number] = country_code
+            if service_id:
+                service_id_for_number[number] = relay_service_ids[service_id].service_id
+        relay_numbers = set(country_code_for_number.keys())
 
         # Collect all the Twilio IncomingPhoneNumbers
         client = twilio_client()
@@ -61,7 +71,9 @@ class RelayNumberSyncChecker(DetectorTask):
 
         # Count countries for the numbers in both databases
         in_both_db = relay_numbers & twilio_numbers
-        country_code_counts = Counter((country_code[number] for number in in_both_db))
+        country_code_counts = Counter(
+            (country_code_for_number[number] for number in in_both_db)
+        )
 
         # Account for the main number, in Twilio but not a RelayNumber
         if settings.TWILIO_MAIN_NUMBER:
@@ -71,10 +83,35 @@ class RelayNumberSyncChecker(DetectorTask):
             main_in_twilio = False
             main_set = set()
 
-        # Account for numbers only in one database
-        only_relay_db = len(relay_numbers - twilio_numbers)
-        only_twilio_db = len(twilio_numbers - relay_numbers - main_set)
-        needs_cleaning = only_relay_db + only_twilio_db
+        # Count numbers only in one database
+        only_relay_db_count = len(relay_numbers - twilio_numbers)
+        only_twilio_db_count = len(twilio_numbers - relay_numbers - main_set)
+
+        # Gather numbers assigned to messaging services
+        services = {
+            service.sid: service for service in client.messaging.v1.services.list()
+        }
+        twilio_service_id_for_number: dict[str, str] = {}
+        for service_id, service in services.items():
+            twilio_service_id_for_number.update(
+                {
+                    pn.phone_number: service_id
+                    for pn in service.phone_numbers.list()
+                    if (
+                        pn.phone_number in in_both_db
+                        and country_code_for_number[pn.phone_number] == "US"
+                    )
+                }
+            )
+        twilio_services = set(services.keys())
+
+        # Count services only in one database
+        service_in_both_db = relay_services & twilio_services
+        service_only_relay_db = relay_services - twilio_services
+        service_only_twilio_db = twilio_services - relay_services
+
+        # Count RelayNumbers that are OK vs need cleaning
+        needs_cleaning = only_relay_db_count + only_twilio_db_count
         ok = len(in_both_db)
         if main_in_twilio:
             ok += 1
@@ -99,8 +136,14 @@ class RelayNumberSyncChecker(DetectorTask):
                 "all": len(relay_numbers | twilio_numbers),
                 "in_both_db": len(in_both_db),
                 "main_number": 1 if main_in_twilio else 0,
-                "only_relay_db": only_relay_db,
-                "only_twilio_db": only_twilio_db,
+                "only_relay_db": only_relay_db_count,
+                "only_twilio_db": only_twilio_db_count,
+            },
+            "twilio_messaging_services": {
+                "all": len(relay_services | twilio_services),
+                "in_both_db": len(service_in_both_db),
+                "only_relay_db": len(service_only_relay_db),
+                "only_twilio_db": len(service_only_twilio_db),
             },
         }
         for code, count in country_code_counts.items():
@@ -128,6 +171,11 @@ class RelayNumberSyncChecker(DetectorTask):
             - Main Number in Twilio Database
             - Only in Relay Database
             - Only in Twilio Database
+        - Twilo Messaging Services
+          - All
+            - In Both Databases
+            - Only in Relay Database
+            - Only in Twilio Database
         """
         relay_all = SubSectionSpec("All", is_total_count=True)
         relay_enabled = SubSectionSpec("Enabled")
@@ -146,6 +194,10 @@ class RelayNumberSyncChecker(DetectorTask):
         main_number = SubSectionSpec("Main Number in Twilio", key="main_number")
         twilio_all.subsections = [in_both, main_number, only_relay, only_twilio]
 
+        service_all = SubSectionSpec(
+            "All", is_total_count=True, subsections=[in_both, only_relay, only_twilio]
+        )
+
         # Dynamically add the country code subsections
         if self._counts:
             for key in sorted(self._counts["twilio_numbers"]):
@@ -158,4 +210,5 @@ class RelayNumberSyncChecker(DetectorTask):
         return [
             SectionSpec("Relay Numbers", subsections=[relay_all]),
             SectionSpec("Twilio Numbers", subsections=[twilio_all]),
+            SectionSpec("Twilio Messaging Services", subsections=[service_all]),
         ]
