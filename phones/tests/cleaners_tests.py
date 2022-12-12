@@ -43,6 +43,7 @@ def setup_relay_number_test_data(
     config_mark = request.node.get_closest_marker("relay_test_config")
     config = config_mark.kwargs if config_mark else {}
     main_number_in_twilio = config.get("main_number_in_twilio", True)
+    main_number_in_service = config.get("main_number_in_service", True)
     remove_number_from_twilio = config.get("remove_number_from_twilio", False)
     remove_number_from_relay = config.get("remove_number_from_relay", False)
 
@@ -53,26 +54,37 @@ def setup_relay_number_test_data(
     twilio_services: list[TwilioMessagingService] = []
     mock_twilio_services: list[Mock] = []
     service_data: list[dict[str, Any]] = [
-        {},
-        {},
+        {"channel": settings.RELAY_CHANNEL},
+        {"twilio_numbers": ["+14015550001"]},
     ]
     for num, data in enumerate(service_data):
+        twilio_numbers = data.pop("twilio_numbers", [])
         twilio_service = baker.make(
             TwilioMessagingService,
             service_id=f"MG{uuid4().hex}",
             friendly_name=f"Relay Service {num}",
+            channel=data.get("channel", "unknown"),
             campaign_use_case="PROXY",
             campaign_status="VERIFIED",
             last_checked=verification_base_date,
         )
         twilio_services.append(twilio_service)
         mock_twilio_service = create_mock_service(twilio_service.service_id, settings)
+        for service_number in twilio_numbers:
+            mock_twilio_service.phone_numbers.list.return_value.append(
+                create_mock_number(service_number, settings)
+            )
         mock_twilio_services.append(mock_twilio_service)
     mock_twilio_client.messaging.v1.services.list.return_value = mock_twilio_services
 
     twilio_objects: list[Mock] = []
     if main_number_in_twilio:
         twilio_objects.append(create_mock_number(settings.TWILIO_MAIN_NUMBER, settings))
+    if main_number_in_twilio and main_number_in_service:
+        mock_twilio_service = mock_twilio_services[main_number_in_service]
+        mock_twilio_service.phone_numbers.list.return_value.append(
+            create_mock_number(settings.TWILIO_MAIN_NUMBER, settings)
+        )
 
     number_data: dict[str, dict[str, Any]] = {
         "+13015550001": {},
@@ -106,13 +118,19 @@ def setup_relay_number_test_data(
         in_relay = data.pop("in_relay", True)
         in_twilio = data.pop("in_twilio", True)
         twilio_number = create_mock_number(relay_number, settings)
+        if service_num is not None and country_code == "US":
+            dj_service = twilio_services[service_num]
+        else:
+            dj_service = None
         if in_relay:
-            baker.make(RelayNumber, user=user, number=relay_number, **data)
+            baker.make(
+                RelayNumber, user=user, number=relay_number, service=dj_service, **data
+            )
         if in_twilio:
             twilio_objects.append(twilio_number)
-        if service_num is not None:
-            service = mock_twilio_services[service_num]
-            service.phone_numbers.list.return_value.append(twilio_number)
+        if in_twilio and service_num is not None and country_code == "US":
+            tw_service = mock_twilio_services[service_num]
+            tw_service.phone_numbers.list.return_value.append(twilio_number)
 
     mock_twilio_client.incoming_phone_numbers.list.return_value = twilio_objects
 
@@ -174,9 +192,9 @@ def get_empty_counts() -> Counts:
         "twilio_numbers": {
             "all": 0,
             "in_both_db": 0,
-            "main_number": 0,
             "only_relay_db": 0,
             "only_twilio_db": 0,
+            "main_number": 0,
         },
         "twilio_messaging_services": {
             "all": 0,
@@ -220,6 +238,8 @@ def test_relay_number_sync_checker_just_main(mock_twilio_client, settings) -> No
     expected_counts["summary"]["needs_cleaning"] = 0
     expected_counts["twilio_numbers"]["all"] = 1
     expected_counts["twilio_numbers"]["main_number"] = 1
+    expected_counts["twilio_numbers"]["main_number_in_service"] = 0
+    expected_counts["twilio_numbers"]["main_number_no_service"] = 1
     assert checker.counts == expected_counts
     assert checker.clean() == 0
 
@@ -240,11 +260,17 @@ def get_synced_counts() -> Counts:
         "twilio_numbers": {
             "all": 8,
             "in_both_db": 7,
-            "main_number": 1,
             "only_relay_db": 0,
             "only_twilio_db": 0,
-            "cc_US": 6,
             "cc_CA": 1,
+            "cc_CA_in_service": 0,
+            "cc_CA_no_service": 1,
+            "cc_US": 6,
+            "cc_US_in_service": 6,
+            "cc_US_no_service": 0,
+            "main_number": 1,
+            "main_number_in_service": 1,
+            "main_number_no_service": 0,
         },
         "twilio_messaging_services": {
             "all": 2,
@@ -277,8 +303,14 @@ def test_relay_number_sync_checker_synced_with_twilio(
 - All: 8
   - In Both Databases      : 7 (87.5%)
     - Country Code CA: 1 (14.3%)
+      - In a Messaging Service    : 0 (  0.0%)
+      - Not in a Messaging Service: 1 (100.0%)
     - Country Code US: 6 (85.7%)
+      - In a Messaging Service    : 6 (100.0%)
+      - Not in a Messaging Service: 0 (  0.0%)
   - Main Number in Twilio  : 1 (12.5%)
+    - In a Messaging Service    : 1 (100.0%)
+    - Not in a Messaging Service: 0 (  0.0%)
   - Only in Relay Database : 0 ( 0.0%)
   - Only in Twilio Database: 0 ( 0.0%)
 
@@ -302,6 +334,8 @@ def test_relay_number_sync_checker_main_not_in_twilio(
     expected_counts["summary"]["ok"] -= 1
     expected_counts["twilio_numbers"]["all"] -= 1
     expected_counts["twilio_numbers"]["main_number"] = 0
+    del expected_counts["twilio_numbers"]["main_number_in_service"]
+    del expected_counts["twilio_numbers"]["main_number_no_service"]
     assert checker.counts == expected_counts
     assert checker.clean() == 0
 
@@ -317,6 +351,7 @@ def test_relay_number_sync_checker_relay_number_not_in_twilio(
     expected_counts["summary"]["needs_cleaning"] += 1
     expected_counts["summary"]["ok"] -= 1
     expected_counts["twilio_numbers"]["cc_US"] -= 1
+    expected_counts["twilio_numbers"]["cc_US_in_service"] -= 1
     expected_counts["twilio_numbers"]["in_both_db"] -= 1
     expected_counts["twilio_numbers"]["only_relay_db"] += 1
     assert checker.counts == expected_counts
@@ -338,6 +373,7 @@ def test_relay_number_sync_checker_twilio_number_not_in_relay(
     expected_counts["relay_numbers"]["used"] -= 1
     expected_counts["relay_numbers"]["used_texts"] -= 1
     expected_counts["twilio_numbers"]["cc_US"] -= 1
+    expected_counts["twilio_numbers"]["cc_US_in_service"] -= 1
     expected_counts["twilio_numbers"]["in_both_db"] -= 1
     expected_counts["twilio_numbers"]["only_twilio_db"] += 1
     assert checker.counts == expected_counts

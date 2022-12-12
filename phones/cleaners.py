@@ -54,38 +54,33 @@ class RelayNumberSyncChecker(DetectorTask):
         )
 
         # Collect all the RelayNumbers, their country code, and their service ID
-        country_code_for_number: dict[str, str] = {}
-        service_id_for_number: dict[str, str] = {}
-        for number, country_code, service_id in RelayNumber.objects.values_list(
-            "number", "country_code", "service_id"
-        ):
-            country_code_for_number[number] = country_code
-            if service_id:
-                service_id_for_number[number] = relay_service_ids[service_id].service_id
-        relay_numbers = set(country_code_for_number.keys())
+        relay_data = [
+            (
+                number,
+                country_code,
+                relay_service_ids[service_id].service_id if service_id else None,
+            )
+            for number, country_code, service_id in RelayNumber.objects.values_list(
+                "number", "country_code", "service_id"
+            )
+        ]
+        relay_numbers = set(triple[0] for triple in relay_data)
 
         # Collect all the Twilio IncomingPhoneNumbers
         client = twilio_client()
         twilio_objs = client.incoming_phone_numbers.list()
         twilio_numbers: set[str] = set(obj.phone_number for obj in twilio_objs)
 
-        # Count countries for the numbers in both databases
+        # Count countries, with and without services, for the numbers in both databases
         in_both_db = relay_numbers & twilio_numbers
-        country_code_counts = Counter(
-            (country_code_for_number[number] for number in in_both_db)
+        country_code_with_service_id = Counter(
+            (country_code, service_id is not None)
+            for number, country_code, service_id in relay_data
+            if number in in_both_db
         )
-
-        # Account for the main number, in Twilio but not a RelayNumber
-        if settings.TWILIO_MAIN_NUMBER:
-            main_in_twilio = settings.TWILIO_MAIN_NUMBER in twilio_numbers
-            main_set = set((settings.TWILIO_MAIN_NUMBER,))
-        else:
-            main_in_twilio = False
-            main_set = set()
-
-        # Count numbers only in one database
-        only_relay_db_count = len(relay_numbers - twilio_numbers)
-        only_twilio_db_count = len(twilio_numbers - relay_numbers - main_set)
+        country_codes = set(
+            country for country, _ in country_code_with_service_id.keys()
+        )
 
         # Gather numbers assigned to messaging services
         services = {
@@ -94,16 +89,26 @@ class RelayNumberSyncChecker(DetectorTask):
         twilio_service_id_for_number: dict[str, str] = {}
         for service_id, service in services.items():
             twilio_service_id_for_number.update(
-                {
-                    pn.phone_number: service_id
-                    for pn in service.phone_numbers.list()
-                    if (
-                        pn.phone_number in in_both_db
-                        and country_code_for_number[pn.phone_number] == "US"
-                    )
-                }
+                {pn.phone_number: service_id for pn in service.phone_numbers.list()}
             )
         twilio_services = set(services.keys())
+
+        # Account for the main number, in Twilio but not a RelayNumber
+        main_number = settings.TWILIO_MAIN_NUMBER
+        if main_number:
+            main_in_twilio = main_number in twilio_numbers
+            main_in_service = (
+                main_in_twilio and main_number in twilio_service_id_for_number
+            )
+            main_set = set((main_number,))
+        else:
+            main_in_twilio = False
+            main_in_service = False
+            main_set = set()
+
+        # Count numbers only in one database
+        only_relay_db_count = len(relay_numbers - twilio_numbers)
+        only_twilio_db_count = len(twilio_numbers - relay_numbers - main_set)
 
         # Count services only in one database
         service_in_both_db = relay_services & twilio_services
@@ -135,9 +140,9 @@ class RelayNumberSyncChecker(DetectorTask):
             "twilio_numbers": {
                 "all": len(relay_numbers | twilio_numbers),
                 "in_both_db": len(in_both_db),
-                "main_number": 1 if main_in_twilio else 0,
                 "only_relay_db": only_relay_db_count,
                 "only_twilio_db": only_twilio_db_count,
+                "main_number": 1 if main_in_twilio else 0,
             },
             "twilio_messaging_services": {
                 "all": len(relay_services | twilio_services),
@@ -146,8 +151,21 @@ class RelayNumberSyncChecker(DetectorTask):
                 "only_twilio_db": len(service_only_twilio_db),
             },
         }
-        for code, count in country_code_counts.items():
-            counts["twilio_numbers"][f"cc_{code}"] = count
+        if main_in_twilio:
+            counts["twilio_numbers"]["main_number_in_service"] = (
+                1 if main_in_service else 0
+            )
+            counts["twilio_numbers"]["main_number_no_service"] = (
+                0 if main_in_service else 1
+            )
+
+        for code in country_codes:
+            # TODO: check number is in Django and Twilio service
+            in_service = country_code_with_service_id[code, True]
+            no_service = country_code_with_service_id[code, False]
+            counts["twilio_numbers"][f"cc_{code}"] = in_service + no_service
+            counts["twilio_numbers"][f"cc_{code}_in_service"] = in_service
+            counts["twilio_numbers"][f"cc_{code}_no_service"] = no_service
 
         cleanup_data: CleanupData = {}
         return counts, cleanup_data
@@ -167,8 +185,14 @@ class RelayNumberSyncChecker(DetectorTask):
           - All
             - In Both Databases
               - CA
+                - In a Messaging Service
+                - Not in a Messaging Service
               - US
+                - In a Messaging Service
+                - Not in a Messaging Service
             - Main Number in Twilio Database
+              - In a Messaging Service
+              - Not in a Messaging Service
             - Only in Relay Database
             - Only in Twilio Database
         - Twilo Messaging Services
@@ -192,7 +216,14 @@ class RelayNumberSyncChecker(DetectorTask):
         only_relay = SubSectionSpec("Only in Relay Database", key="only_relay_db")
         only_twilio = SubSectionSpec("Only in Twilio Database", key="only_twilio_db")
         main_number = SubSectionSpec("Main Number in Twilio", key="main_number")
+        main_in_service = SubSectionSpec(
+            "In a Messaging Service", key="main_number_in_service"
+        )
+        main_no_service = SubSectionSpec(
+            "Not in a Messaging Service", key="main_number_no_service"
+        )
         twilio_all.subsections = [in_both, main_number, only_relay, only_twilio]
+        main_number.subsections = [main_in_service, main_no_service]
 
         service_all = SubSectionSpec(
             "All", is_total_count=True, subsections=[in_both, only_relay, only_twilio]
@@ -201,10 +232,19 @@ class RelayNumberSyncChecker(DetectorTask):
         # Dynamically add the country code subsections
         if self._counts:
             for key in sorted(self._counts["twilio_numbers"]):
-                if key.startswith("cc_"):
-                    code = key.removeprefix("cc_")
+                if key.startswith("cc_") and not key.endswith("_service"):
+                    has_service = SubSectionSpec(
+                        "In a Messaging Service", key=f"{key}_in_service"
+                    )
+                    no_service = SubSectionSpec(
+                        "Not in a Messaging Service", key=f"{key}_no_service"
+                    )
                     in_both.subsections.append(
-                        SubSectionSpec(f"Country Code {code}", key=key)
+                        SubSectionSpec(
+                            f"Country Code {key.removeprefix('cc_')}",
+                            key=key,
+                            subsections=[has_service, no_service],
+                        )
                     )
 
         return [
