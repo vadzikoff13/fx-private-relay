@@ -265,9 +265,13 @@ def get_synced_counts() -> Counts:
             "cc_CA": 1,
             "cc_CA_in_service": 0,
             "cc_CA_no_service": 1,
+            "cc_CA_only_relay_service": 0,
+            "cc_CA_only_twilio_service": 0,
             "cc_US": 6,
             "cc_US_in_service": 6,
             "cc_US_no_service": 0,
+            "cc_US_only_relay_service": 0,
+            "cc_US_only_twilio_service": 0,
             "main_number": 1,
             "main_number_in_service": 1,
             "main_number_no_service": 0,
@@ -303,11 +307,15 @@ def test_relay_number_sync_checker_synced_with_twilio(
 - All: 8
   - In Both Databases      : 7 (87.5%)
     - Country Code CA: 1 (14.3%)
-      - In a Messaging Service    : 0 (  0.0%)
-      - Not in a Messaging Service: 1 (100.0%)
+      - In a Messaging Service     : 0 (  0.0%)
+      - Only in Relay Service Table: 0 (  0.0%)
+      - Only in Twilio Service     : 0 (  0.0%)
+      - Not in a Messaging Service : 1 (100.0%)
     - Country Code US: 6 (85.7%)
-      - In a Messaging Service    : 6 (100.0%)
-      - Not in a Messaging Service: 0 (  0.0%)
+      - In a Messaging Service     : 6 (100.0%)
+      - Only in Relay Service Table: 0 (  0.0%)
+      - Only in Twilio Service     : 0 (  0.0%)
+      - Not in a Messaging Service : 0 (  0.0%)
   - Main Number in Twilio  : 1 (12.5%)
     - In a Messaging Service    : 1 (100.0%)
     - Not in a Messaging Service: 0 (  0.0%)

@@ -160,12 +160,14 @@ class RelayNumberSyncChecker(DetectorTask):
             )
 
         for code in country_codes:
-            # TODO: check number is in Django and Twilio service
             in_service = country_code_with_service_id[code, True]
             no_service = country_code_with_service_id[code, False]
             counts["twilio_numbers"][f"cc_{code}"] = in_service + no_service
             counts["twilio_numbers"][f"cc_{code}_in_service"] = in_service
             counts["twilio_numbers"][f"cc_{code}_no_service"] = no_service
+            # TODO: check number is in Django and Twilio service only
+            counts["twilio_numbers"][f"cc_{code}_only_relay_service"] = 0
+            counts["twilio_numbers"][f"cc_{code}_only_twilio_service"] = 0
 
         cleanup_data: CleanupData = {}
         return counts, cleanup_data
@@ -186,9 +188,13 @@ class RelayNumberSyncChecker(DetectorTask):
             - In Both Databases
               - CA
                 - In a Messaging Service
+                - Only in Relay Service Table
+                - Only in Twilio Service
                 - Not in a Messaging Service
               - US
                 - In a Messaging Service
+                - Only in Relay Service Table
+                - Only in Twilio Service
                 - Not in a Messaging Service
             - Main Number in Twilio Database
               - In a Messaging Service
@@ -233,17 +239,21 @@ class RelayNumberSyncChecker(DetectorTask):
         if self._counts:
             for key in sorted(self._counts["twilio_numbers"]):
                 if key.startswith("cc_") and not key.endswith("_service"):
-                    has_service = SubSectionSpec(
-                        "In a Messaging Service", key=f"{key}_in_service"
+                    name_and_key_suffix = (
+                        ("In a Messaging Service", "_in_service"),
+                        ("Only in Relay Service Table", "_only_relay_service"),
+                        ("Only in Twilio Service", "_only_twilio_service"),
+                        ("Not in a Messaging Service", "_no_service"),
                     )
-                    no_service = SubSectionSpec(
-                        "Not in a Messaging Service", key=f"{key}_no_service"
-                    )
+                    subsections = [
+                        SubSectionSpec(name, key=key + suffix)
+                        for name, suffix in name_and_key_suffix
+                    ]
                     in_both.subsections.append(
                         SubSectionSpec(
                             f"Country Code {key.removeprefix('cc_')}",
                             key=key,
-                            subsections=[has_service, no_service],
+                            subsections=subsections,
                         )
                     )
 
