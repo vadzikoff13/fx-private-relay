@@ -69,8 +69,3 @@ ignore_missing_imports = true
 module = [
     "silk",
 ]
-
-[tool.pytest.ini_options]
-markers = [
-    "relay_test_config: keywords to customize setup fixtures",
-]
