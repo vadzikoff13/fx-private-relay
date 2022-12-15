@@ -221,16 +221,8 @@ class TwilioMessagingService(models.Model):
     friendly_name = models.CharField(
         max_length=64, help_text="Friendly name of service"
     )
-    channel = models.CharField(
-        max_length=40,
-        default="unknown",
-        help_text="Which Relay channel uses this service?",
-    )
-    spam = models.BooleanField(
-        default=False, help_text="Service has been identifed as sending spam"
-    )
-    full = models.BooleanField(
-        default=False, help_text="Service is at limit of associated phones"
+    use_case = models.CharField(
+        max_length=40, help_text="The Service usecase, such as notifications"
     )
     campaign_use_case = models.CharField(
         max_length=40, help_text="The US A2P use case code, such as PROXY"
@@ -242,8 +234,19 @@ class TwilioMessagingService(models.Model):
             " or FAILED"
         ),
     )
-    last_checked = models.DateTimeField(
-        null=True, help_text="Last time the service status was checked."
+    channel = models.CharField(
+        max_length=40,
+        default="unknown",
+        help_text="Which Relay channel uses this service?",
+    )
+    spam = models.BooleanField(
+        default=False, help_text="Service has been identifed as sending spam"
+    )
+    size = models.IntegerField(
+        default=200, help_text="Maximum numbers to assign to this service"
+    )
+    full = models.BooleanField(
+        default=False, help_text="Service is at limit of associated phones"
     )
 
 
