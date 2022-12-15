@@ -248,7 +248,7 @@ def test_relay_number_sync_checker_just_main(mock_twilio_client, settings) -> No
 def get_synced_counts() -> Counts:
     """Return the counts when Relay is synced with Twilio"""
     return {
-        "summary": {"ok": 8, "needs_cleaning": 0},
+        "summary": {"ok": 10, "needs_cleaning": 0},
         "relay_numbers": {
             "all": 7,
             "disabled": 1,

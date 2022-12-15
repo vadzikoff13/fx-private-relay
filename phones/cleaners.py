@@ -303,6 +303,18 @@ class _CombinedService:
     is_relay_service: bool = False
     is_twilio_service: bool = False
 
+    @property
+    def is_synced(self):
+        return self.is_relay_service and self.is_twilio_service
+
+    @property
+    def can_sync(self):
+        return self.is_twilio_service and not self.is_relay_service
+
+    @property
+    def manual_sync(self):
+        return self.is_relay_service and not self.is_twilio_service
+
 
 class _CombinedServiceData:
     """Combined service data from Relay and Twilio."""
@@ -365,6 +377,43 @@ class _CombinedServiceData:
         """Return count of numbers only in Twilio database."""
         return self._count_by_presence[False, True]
 
+    @lru_cache
+    def _sync_counts(
+        self,
+    ) -> tuple[dict[bool, int], list[_CombinedService], list[_CombinedService]]:
+        """
+        Return count of data, and items to sync
+
+        Return is a tuple:
+        - Counter (dict) with key (needs sync?)
+        - List of services that can be automatically synced
+        - List of services that need to be manually synced
+        """
+        needs_sync: dict[bool, int] = Counter()
+        can_sync: list[_CombinedService] = []
+        manual_sync: list[_CombinedService] = []
+
+        for service in self._services.values():
+            if service.is_synced:
+                needs_sync[False] += 1
+            elif service.can_sync:
+                needs_sync[True] += 1
+                can_sync.append(service)
+            elif service.manual_sync:
+                needs_sync[True] += 1
+                manual_sync.append(service)
+        return needs_sync, can_sync, manual_sync
+
+    @property
+    def ok(self):
+        """Return count of items that do not need syncing"""
+        return self._sync_counts()[0][False]
+
+    @property
+    def needs_sync(self):
+        """Return count of items that need syncing"""
+        return self._sync_counts()[0][True]
+
 
 class RelayNumberSyncChecker(DetectorTask):
     slug = "relay-numbers"
@@ -408,8 +457,8 @@ class RelayNumberSyncChecker(DetectorTask):
         # Gather initial counts
         counts: Counts = {
             "summary": {
-                "ok": number_data.ok,
-                "needs_cleaning": number_data.needs_sync,
+                "ok": number_data.ok + service_data.ok,
+                "needs_cleaning": number_data.needs_sync + service_data.needs_sync,
             },
             "relay_numbers": self._relaynumber_usage_counts(),
             "twilio_numbers": {
