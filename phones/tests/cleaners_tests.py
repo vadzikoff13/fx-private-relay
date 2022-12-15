@@ -27,6 +27,7 @@ def mock_twilio_settings(settings) -> None:
     settings.TWILIO_AUTH_TOKEN = uuid4().hex
     settings.TWILIO_SMS_APPLICATION_SID = f"AP{uuid4().hex}"
     settings.TWILIO_MESSAGING_SERVICE_SID = f"MG{uuid4().hex}"
+    settings.TWILIO_BRAND_REGISTRATION_SID = f"BN{uuid4().hex}"
     settings.TWILIO_MAIN_NUMBER = "+12005550000"
 
 
@@ -60,17 +61,20 @@ def setup_relay_number_test_data(
     ]
     for num, data in enumerate(service_data):
         twilio_numbers = data.pop("twilio_numbers", [])
+        friendly_name = f"Relay Service {num}"
         twilio_service = baker.make(
             TwilioMessagingService,
             service_id=f"MG{uuid4().hex}",
-            friendly_name=f"Relay Service {num}",
-            channel=data.get("channel", "unknown"),
+            friendly_name=friendly_name,
+            use_case="notifications",
             campaign_use_case="PROXY",
             campaign_status="VERIFIED",
-            last_checked=verification_base_date,
+            channel=data.get("channel", "unknown"),
         )
         twilio_services.append(twilio_service)
-        mock_twilio_service = create_mock_service(twilio_service.service_id, settings)
+        mock_twilio_service = create_mock_service(
+            twilio_service.service_id, friendly_name, settings
+        )
         for service_number in twilio_numbers:
             mock_twilio_service.phone_numbers.list.return_value.append(
                 create_mock_number(service_number, settings)
@@ -138,9 +142,9 @@ def setup_relay_number_test_data(
     mock_twilio_client.incoming_phone_numbers.list.return_value = twilio_objects
 
 
-def create_mock_service(service_id: str, settings) -> Mock:
+def create_mock_service(service_id: str, friendly_name: str, settings) -> Mock:
     """
-    Create a mock ServiceInstance.
+    Create a mock Service instance.
 
     Omitted properties: area_code_geomatch, date_created, date_updated,
     fallback_method, fallback_to_long_code, fallback_url, inbound_method,
@@ -150,12 +154,37 @@ def create_mock_service(service_id: str, settings) -> Mock:
     service = Mock(
         account_sid=settings.TWILIO_ACCOUNT_SID,
         sid=service_id,
+        friendly_name=friendly_name,
         status_callback=f"{settings.SITE_ORIGIN}/api/v1/sms_status",
         us_app_to_person_registered=True,
-        usecase="discussion",
+        usecase="notifications",
+        use_inbound_webhook_on_number=True,
     )
     service.phone_numbers.list.return_value = []
+    service.us_app_to_person.list.return_value = [
+        create_mock_us_app_to_person(service_id, settings)
+    ]
     return service
+
+
+def create_mock_us_app_to_person(messaging_service_sid, settings) -> Mock:
+    """
+    Create a mock US App to Person (brand registration) instance
+
+    Omitted properties: brand_registration_sid, campaign_id, date_created,
+    date_updated, description, has_embedded_links, has_embedded_phone,
+    help_keywords, help_message, is_externally_registered, message_flow,
+    message_samples, mock, opt_in_keywords, opt_in_message, opt_out_keywords,
+    opt_out_message, rate_limits, url
+    """
+    return Mock(
+        account_sid=settings.TWILIO_ACCOUNT_SID,
+        brand_registration_sid=settings.TWILIO_BRAND_REGISTRATION_SID,
+        messaging_service_sid=messaging_service_sid,
+        sid=f"QE{uuid4().hex}",
+        campaign_status="VERIFIED",
+        us_app_to_person_usecase="PROXY",
+    )
 
 
 def create_mock_number(phone_number: str, settings) -> Mock:

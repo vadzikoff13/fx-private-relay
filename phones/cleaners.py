@@ -34,11 +34,27 @@ class _RelayNumberData:
 class _RelayServiceData:
     service_id: str
     friendly_name: str
-    channel: str
-    spam: bool
-    full: bool
+    use_case: str
     campaign_use_case: str
     campaign_status: str
+    channel: str
+    spam: bool
+    size: int
+    full: bool
+
+
+@dataclass
+class _TwilioCampaignData:
+    """US A2P Campaign data from Twilio."""
+
+    campaign_sid: str
+    brand_registration_sid: str
+    campaign_status: str
+    us_app_to_person_usecase: str
+
+
+class MultipleCampaignError(Exception):
+    pass
 
 
 @dataclass
@@ -47,6 +63,23 @@ class _TwilioServiceData:
 
     service_id: str
     numbers: list[str]
+    friendly_name: str
+    status_callback: str
+    us_app_to_person_registered: bool
+    usecase: str
+    use_inbound_webhook_on_number: bool
+    campaigns: list[_TwilioCampaignData]
+
+    @cached_property
+    def campaign(self) -> Optional[_TwilioCampaignData]:
+        """Return the campaign Twilio might be using."""
+        if len(self.campaigns) == 1:
+            return self.campaigns[0]
+        if len(self.campaigns) == 0:
+            return None
+        raise MultipleCampaignError(
+            "Messaging service has multiple campaigns.", self.campaigns
+        )
 
 
 @dataclass
@@ -301,15 +334,49 @@ class _CombinedService:
 
     service_id: str
     is_relay_service: bool = False
+    relay_friendly_name: Optional[str] = None
+    relay_use_case: Optional[str] = None
+    relay_campaign_use_case: Optional[str] = None
+    relay_campaign_status: Optional[str] = None
+    relay_channel: Optional[str] = None
+    relay_spam: Optional[bool] = None
+    relay_size: Optional[int] = None
+    relay_full: Optional[bool] = None
     is_twilio_service: bool = False
+    twilio_friendly_name: Optional[str] = None
+    twilio_status_callback: Optional[str] = None
+    twilio_us_app_to_person_registered: Optional[bool] = None
+    twilio_usecase: Optional[str] = None
+    twilio_use_inbound_webhook_on_number: Optional[bool] = None
+    twilio_campaign_sid: Optional[str] = None
+    twilio_campaign_us_app_to_person_usecase: Optional[str] = None
+    twilio_campaign_status: Optional[str] = None
 
     @property
     def is_synced(self):
-        return self.is_relay_service and self.is_twilio_service
+        return (
+            self.is_relay_service
+            and self.is_twilio_service
+            and self.relay_friendly_name == self.twilio_friendly_name
+            and self.relay_use_case == self.twilio_usecase
+            and self.relay_campaign_use_case
+            == self.twilio_campaign_us_app_to_person_usecase
+            and self.relay_campaign_status == self.twilio_campaign_status
+        )
 
     @property
     def can_sync(self):
-        return self.is_twilio_service and not self.is_relay_service
+        return (self.is_twilio_service and not self.is_relay_service) or (
+            self.is_twilio_service
+            and self.is_relay_service
+            and not (
+                self.relay_friendly_name == self.twilio_friendly_name
+                and self.relay_use_case == self.twilio_usecase
+                and self.relay_campaign_use_case
+                == self.twilio_campaign_us_app_to_person_usecase
+                and self.relay_campaign_status == self.twilio_campaign_status
+            )
+        )
 
     @property
     def manual_sync(self):
@@ -332,6 +399,14 @@ class _CombinedServiceData:
             self._services[service_id] = _CombinedService(
                 service_id=service_id,
                 is_relay_service=True,
+                relay_friendly_name=relay_service.friendly_name,
+                relay_use_case=relay_service.use_case,
+                relay_campaign_use_case=relay_service.campaign_use_case,
+                relay_campaign_status=relay_service.campaign_status,
+                relay_channel=relay_service.channel,
+                relay_spam=relay_service.spam,
+                relay_size=relay_service.size,
+                relay_full=relay_service.full,
             )
 
         for twilio_service in twilio_services:
@@ -340,9 +415,24 @@ class _CombinedServiceData:
                 self._services[service_id].is_twilio_service = True
             else:
                 self._services[service_id] = _CombinedService(
-                    service_id=service_id,
-                    is_twilio_service=True,
+                    service_id=service_id, is_twilio_service=True
                 )
+            service = self._services[service_id]
+            service.twilio_friendly_name = twilio_service.friendly_name
+            service.twilio_status_callback = twilio_service.status_callback
+            service.twilio_us_app_to_person_registered = (
+                twilio_service.us_app_to_person_registered
+            )
+            service.twilio_usecase = twilio_service.usecase
+            service.twilio_use_inbound_webhook_on_number = (
+                twilio_service.use_inbound_webhook_on_number
+            )
+            if twilio_service.campaign:
+                service.twilio_campaign_sid = twilio_service.campaign.campaign_sid
+                service.twilio_campaign_us_app_to_person_usecase = (
+                    twilio_service.campaign.us_app_to_person_usecase
+                )
+                service.twilio_campaign_status = twilio_service.campaign.campaign_status
 
     @cached_property
     def _count_by_presence(self) -> dict[tuple[bool, bool], int]:
@@ -413,6 +503,13 @@ class _CombinedServiceData:
     def needs_sync(self):
         """Return count of items that need syncing"""
         return self._sync_counts()[0][True]
+
+    def get_cleanup_data(self) -> dict[str, list[_CombinedService]]:
+        _, can_sync, manual_sync = self._sync_counts()
+        return {
+            "services_to_sync": can_sync,
+            "services_to_manually_sync": manual_sync,
+        }
 
 
 class RelayNumberSyncChecker(DetectorTask):
@@ -505,6 +602,7 @@ class RelayNumberSyncChecker(DetectorTask):
             ] = number_data.only_twilio_service_count(code)
 
         cleanup_data: CleanupData = number_data.get_cleanup_data()
+        cleanup_data.update(service_data.get_cleanup_data())
         return counts, cleanup_data
 
     def _relaynumber_usage_counts(self) -> dict[str, int]:
@@ -551,11 +649,13 @@ class RelayNumberSyncChecker(DetectorTask):
             for vals in TwilioMessagingService.objects.values_list(
                 "service_id",
                 "friendly_name",
-                "channel",
-                "spam",
-                "full",
+                "use_case",
                 "campaign_use_case",
                 "campaign_status",
+                "channel",
+                "spam",
+                "size",
+                "full",
             )
         )
 
@@ -567,14 +667,35 @@ class RelayNumberSyncChecker(DetectorTask):
         """Get Twilio's service data."""
         data = []
         for service in client.messaging.v1.services.list():
-            service_id = service.sid
             numbers = [pn.phone_number for pn in service.phone_numbers.list()]
-            data.append(_TwilioServiceData(service_id, numbers))
+            campaigns = [
+                _TwilioCampaignData(
+                    campaign_sid=campaign.sid,
+                    brand_registration_sid=campaign.brand_registration_sid,
+                    campaign_status=campaign.campaign_status,
+                    us_app_to_person_usecase=campaign.us_app_to_person_usecase,
+                )
+                for campaign in service.us_app_to_person.list()
+            ]
+
+            service_data = _TwilioServiceData(
+                service_id=service.sid,
+                numbers=numbers,
+                friendly_name=service.friendly_name,
+                status_callback=service.status_callback,
+                us_app_to_person_registered=service.us_app_to_person_registered,
+                usecase=service.usecase,
+                use_inbound_webhook_on_number=service.use_inbound_webhook_on_number,
+                campaigns=campaigns,
+            )
+            data.append(service_data)
         return data
 
     def markdown_report_spec(self) -> list[SectionSpec]:
         """
         Return specification for RelayNumberCleaner.
+
+        TODO: Drill down into messaging services
 
         - Relay Numbers
           - All
