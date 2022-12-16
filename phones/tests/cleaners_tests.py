@@ -311,6 +311,12 @@ def get_synced_counts() -> Counts:
             "in_both_db": 2,
             "only_relay_db": 0,
             "only_twilio_db": 0,
+            "synced_with_good_data": 2,
+            "synced_but_bad_data": 0,
+            "out_of_sync": 0,
+            "ready": 2,
+            "spam": 0,
+            "full": 0,
         },
     }
 
@@ -337,15 +343,15 @@ def test_relay_number_sync_checker_synced_with_twilio(
 - All: 8
   - In Both Databases      : 7 (87.5%)
     - Country Code CA: 1 (14.3%)
-      - In a Messaging Service     : 0 (  0.0%)
-      - Only in Relay Service Table: 0 (  0.0%)
-      - Only in Twilio Service     : 0 (  0.0%)
-      - Not in a Messaging Service : 1 (100.0%)
+      - In a Messaging Service          : 0 (  0.0%)
+      - Only in Relay Messaging Service : 0 (  0.0%)
+      - Only in Twilio Messaging Service: 0 (  0.0%)
+      - Not in a Messaging Service (OK) : 1 (100.0%)
     - Country Code US: 6 (85.7%)
-      - In a Messaging Service     : 6 (100.0%)
-      - Only in Relay Service Table: 0 (  0.0%)
-      - Only in Twilio Service     : 0 (  0.0%)
-      - Not in a Messaging Service : 0 (  0.0%)
+      - In a Messaging Service          : 6 (100.0%)
+      - Only in Relay Messaging Service : 0 (  0.0%)
+      - Only in Twilio Messaging Service: 0 (  0.0%)
+      - Not in a Messaging Service      : 0 (  0.0%)
   - Main Number in Twilio  : 1 (12.5%)
     - In a Messaging Service    : 1 (100.0%)
     - Not in a Messaging Service: 0 (  0.0%)
@@ -355,6 +361,12 @@ def test_relay_number_sync_checker_synced_with_twilio(
 **Twilio Messaging Services**:
 - All: 2
   - In Both Databases      : 2 (100.0%)
+    - In Sync, Good Data: 2 (100.0%)
+      - Ready to Use  : 2 (100.0%)
+      - Marked as Spam: 0 (  0.0%)
+      - Full          : 0 (  0.0%)
+    - In Sync, Bad Data : 0 (  0.0%)
+    - Out of Sync       : 0 (  0.0%)
   - Only in Relay Database : 0 (  0.0%)
   - Only in Twilio Database: 0 (  0.0%)"""
     assert report == expected

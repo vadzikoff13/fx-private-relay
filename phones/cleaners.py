@@ -353,7 +353,7 @@ class _CombinedService:
     twilio_campaign_status: Optional[str] = None
 
     @property
-    def is_synced(self):
+    def is_synced(self) -> bool:
         return (
             self.is_relay_service
             and self.is_twilio_service
@@ -365,7 +365,7 @@ class _CombinedService:
         )
 
     @property
-    def can_sync(self):
+    def can_sync(self) -> bool:
         return (self.is_twilio_service and not self.is_relay_service) or (
             self.is_twilio_service
             and self.is_relay_service
@@ -379,7 +379,7 @@ class _CombinedService:
         )
 
     @property
-    def manual_sync(self):
+    def manual_sync(self) -> bool:
         return self.is_relay_service and not self.is_twilio_service
 
 
@@ -504,6 +504,30 @@ class _CombinedServiceData:
         """Return count of items that need syncing"""
         return self._sync_counts()[0][True]
 
+    @property
+    def synced_with_good_data_count(self) -> int:
+        return self.in_both_db_count
+
+    @property
+    def synced_but_bad_data_count(self) -> int:
+        return 0
+
+    @property
+    def out_of_sync_count(self) -> int:
+        return 0
+
+    @property
+    def ready_count(self) -> int:
+        return self.synced_with_good_data_count
+
+    @property
+    def spam_count(self) -> int:
+        return 0
+
+    @property
+    def full_count(self) -> int:
+        return 0
+
     def get_cleanup_data(self) -> dict[str, list[_CombinedService]]:
         _, can_sync, manual_sync = self._sync_counts()
         return {
@@ -563,7 +587,6 @@ class RelayNumberSyncChecker(DetectorTask):
                 "in_both_db": number_data.in_both_db_count,
                 "only_relay_db": number_data.only_relay_db_count,
                 "only_twilio_db": number_data.only_twilio_db_count,
-                "main_number": 1 if number_data.main_in_twilio else 0,
             },
             "twilio_messaging_services": {
                 "all": service_data.all_count,
@@ -573,7 +596,7 @@ class RelayNumberSyncChecker(DetectorTask):
             },
         }
 
-        # Handle main number
+        # Add main number
         if number_data.main_in_twilio:
             counts["twilio_numbers"].update(
                 {
@@ -585,7 +608,7 @@ class RelayNumberSyncChecker(DetectorTask):
         else:
             counts["twilio_numbers"]["main_number"] = 0
 
-        # Gather per-country counts
+        # Add per-country counts, if any
         for code in number_data.country_codes:
             counts["twilio_numbers"][f"cc_{code}"] = number_data.country_count(code)
             counts["twilio_numbers"][
@@ -600,6 +623,24 @@ class RelayNumberSyncChecker(DetectorTask):
             counts["twilio_numbers"][
                 f"cc_{code}_only_twilio_service"
             ] = number_data.only_twilio_service_count(code)
+
+        # Add data about in-sync services, if any
+        if service_data.in_both_db_count != 0:
+            counts["twilio_messaging_services"].update(
+                {
+                    "synced_with_good_data": service_data.synced_with_good_data_count,
+                    "synced_but_bad_data": service_data.synced_but_bad_data_count,
+                    "out_of_sync": service_data.out_of_sync_count,
+                }
+            )
+        if service_data.synced_with_good_data_count != 0:
+            counts["twilio_messaging_services"].update(
+                {
+                    "ready": service_data.ready_count,
+                    "spam": service_data.spam_count,
+                    "full": service_data.full_count,
+                }
+            )
 
         cleanup_data: CleanupData = number_data.get_cleanup_data()
         cleanup_data.update(service_data.get_cleanup_data())
@@ -695,8 +736,6 @@ class RelayNumberSyncChecker(DetectorTask):
         """
         Return specification for RelayNumberCleaner.
 
-        TODO: Drill down into messaging services
-
         - Relay Numbers
           - All
             - Enabled
@@ -725,6 +764,12 @@ class RelayNumberSyncChecker(DetectorTask):
         - Twilo Messaging Services
           - All
             - In Both Databases
+              - In Sync, Good Data
+                - Ready to Use
+                - Marked as Spam
+                - Full
+              - In Sync, Bad Data
+              - Out of Sync
             - Only in Relay Database
             - Only in Twilio Database
         """
@@ -752,31 +797,47 @@ class RelayNumberSyncChecker(DetectorTask):
         twilio_all.subsections = [in_both, main_number, only_relay, only_twilio]
         main_number.subsections = [main_in_service, main_no_service]
 
-        service_all = SubSectionSpec(
-            "All", is_total_count=True, subsections=[in_both, only_relay, only_twilio]
-        )
+        service_in_both = SubSectionSpec("In Both Databases", key="in_both_db")
+        in_sync_good = SubSectionSpec("In Sync, Good Data", key="synced_with_good_data")
+        in_sync_bad = SubSectionSpec("In Sync, Bad Data", key="synced_but_bad_data")
+        out_of_sync = SubSectionSpec("Out of Sync")
+        ready = SubSectionSpec("Ready to Use", key="ready")
+        spam = SubSectionSpec("Marked as Spam", key="spam")
+        full = SubSectionSpec("Full")
+
+        service_all = SubSectionSpec("All", is_total_count=True)
+        service_all.subsections = [service_in_both, only_relay, only_twilio]
+        service_in_both.subsections = [in_sync_good, in_sync_bad, out_of_sync]
+        in_sync_good.subsections = [ready, spam, full]
 
         # Dynamically add the country code subsections
-        if self._counts:
-            for key in sorted(self._counts["twilio_numbers"]):
-                if key.startswith("cc_") and not key.endswith("_service"):
-                    name_and_key_suffix = (
-                        ("In a Messaging Service", "_in_service"),
-                        ("Only in Relay Service Table", "_only_relay_service"),
-                        ("Only in Twilio Service", "_only_twilio_service"),
-                        ("Not in a Messaging Service", "_no_service"),
+        counts = self.counts
+        assert counts
+        for key in sorted(counts["twilio_numbers"]):
+            if key.startswith("cc_") and not key.endswith("_service"):
+                country_code = key.removeprefix("cc_")
+                name_and_key_suffix = (
+                    ("In a Messaging Service", "_in_service"),
+                    ("Only in Relay Messaging Service", "_only_relay_service"),
+                    ("Only in Twilio Messaging Service", "_only_twilio_service"),
+                    (
+                        (
+                            "Not in a Messaging Service"
+                            f"{'' if country_code == 'US' else ' (OK)'}"
+                        ),
+                        "_no_service",
+                    ),
+                )
+
+                subsections = [
+                    SubSectionSpec(name, key=key + suffix)
+                    for name, suffix in name_and_key_suffix
+                ]
+                in_both.subsections.append(
+                    SubSectionSpec(
+                        f"Country Code {country_code}", key=key, subsections=subsections
                     )
-                    subsections = [
-                        SubSectionSpec(name, key=key + suffix)
-                        for name, suffix in name_and_key_suffix
-                    ]
-                    in_both.subsections.append(
-                        SubSectionSpec(
-                            f"Country Code {key.removeprefix('cc_')}",
-                            key=key,
-                            subsections=subsections,
-                        )
-                    )
+                )
 
         return [
             SectionSpec("Relay Numbers", subsections=[relay_all]),
