@@ -29,8 +29,8 @@ def mock_twilio_settings(settings) -> None:
     settings.TWILIO_MESSAGING_SERVICE_SID = f"MG{uuid4().hex}"
     settings.TWILIO_BRAND_REGISTRATION_SID = f"BN{uuid4().hex}"
     settings.TWILIO_MAIN_NUMBER = "+12005550000"
-    settings.TWILIO_DEPLOYMENT = "prod"
-    settings.TWILIO_MAIN_NUMBER_DEPLOYMENT = "prod-main"
+    settings.TWILIO_CHANNEL = "prod"
+    settings.TWILIO_MAIN_NUMBER_CHANNEL = "prod-main"
 
 
 @pytest.fixture
@@ -71,12 +71,12 @@ def setup_relay_number_test_data(
         "number_service": {
             # My deployment's service for RelayNumbers
             "friendly_name": "My Firefox Relay 1",
-            "channel": settings.TWILIO_DEPLOYMENT,
+            "channel": settings.TWILIO_CHANNEL,
         },
         "main_service": {
             # My deployment's service for the main number
             "friendly_name": "My Firefox Relay Main Service",
-            "channel": settings.TWILIO_MAIN_NUMBER_DEPLOYMENT,
+            "channel": settings.TWILIO_MAIN_NUMBER_CHANNEL,
         },
         "other_service": {
             # A different deployment's service
