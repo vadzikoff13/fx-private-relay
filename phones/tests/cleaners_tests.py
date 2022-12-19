@@ -29,6 +29,8 @@ def mock_twilio_settings(settings) -> None:
     settings.TWILIO_MESSAGING_SERVICE_SID = f"MG{uuid4().hex}"
     settings.TWILIO_BRAND_REGISTRATION_SID = f"BN{uuid4().hex}"
     settings.TWILIO_MAIN_NUMBER = "+12005550000"
+    settings.TWILIO_DEPLOYMENT = "prod"
+    settings.TWILIO_MAIN_NUMBER_DEPLOYMENT = "prod-main"
 
 
 @pytest.fixture
@@ -52,6 +54,8 @@ def setup_relay_number_test_data(
         "remove_number_from_relay_service": False,
         "remove_number_from_twilio": False,
         "remove_number_from_twilio_service": False,
+        "remove_relay_service": False,
+        "remove_twilio_service": False,
     }
     config = {
         key: config_kwargs.get(key, default) for key, default in config_defaults.items()
@@ -61,43 +65,64 @@ def setup_relay_number_test_data(
     verification_base_date = timezone.now() - timedelta(days=60)
 
     # Create TwilioMessagingService objects and related Twilio mock objects
-    twilio_services: list[TwilioMessagingService] = []
-    mock_twilio_services: list[Mock] = []
-    service_data: list[dict[str, Any]] = [
-        # My deployment's service
-        {"channel": settings.RELAY_CHANNEL},  # TODO: Change to TWILIO_DEPLOYMENT
-        # A different deployment's service
-        {"channel": "unknown", "twilio_numbers": ["+14015550001"]},
-    ]
-    for num, data in enumerate(service_data):
+    twilio_services: dict[str, TwilioMessagingService] = {}
+    mock_twilio_services: dict[str, Mock] = {}
+    service_data: dict[str, dict[str, Any]] = {
+        "number_service": {
+            # My deployment's service for RelayNumbers
+            "friendly_name": "My Firefox Relay 1",
+            "channel": settings.TWILIO_DEPLOYMENT,
+        },
+        "main_service": {
+            # My deployment's service for the main number
+            "friendly_name": "My Firefox Relay Main Service",
+            "channel": settings.TWILIO_MAIN_NUMBER_DEPLOYMENT,
+        },
+        "other_service": {
+            # A different deployment's service
+            "friendly_name": "Stage Testing 1",
+            "channel": "unknown",
+            "twilio_numbers": ["+14015550001"],
+            "in_relay": not config["remove_relay_service"],
+            "in_twilio": not config["remove_twilio_service"],
+        },
+    }
+    for service_key, data in service_data.items():
         twilio_numbers = data.pop("twilio_numbers", [])
-        friendly_name = f"Relay Service {num}"
-        twilio_service = baker.make(
-            TwilioMessagingService,
-            service_id=f"MG{uuid4().hex}",
-            friendly_name=friendly_name,
-            use_case="notifications",
-            campaign_use_case="PROXY",
-            campaign_status="VERIFIED",
-            channel=data["channel"],
-        )
-        twilio_services.append(twilio_service)
-        mock_twilio_service = create_mock_service(
-            twilio_service.service_id, friendly_name, settings
-        )
-        for service_number in twilio_numbers:
-            mock_twilio_service.phone_numbers.list.return_value.append(
-                create_mock_number(service_number, settings)
+        in_relay = data.pop("in_relay", True)
+        in_twilio = data.pop("in_twilio", True)
+        service_id = f"MG{uuid4().hex}"
+
+        if in_relay:
+            twilio_services[service_key] = baker.make(
+                TwilioMessagingService,
+                service_id=service_id,
+                friendly_name=data["friendly_name"],
+                use_case="notifications",
+                campaign_use_case="PROXY",
+                campaign_status="VERIFIED",
+                channel=data["channel"],
             )
-        mock_twilio_services.append(mock_twilio_service)
-    mock_twilio_client.messaging.v1.services.list.return_value = mock_twilio_services
+
+        if in_twilio:
+            mock_twilio_service = create_mock_service(
+                service_id, data["friendly_name"], settings
+            )
+            for service_number in twilio_numbers:
+                mock_twilio_service.phone_numbers.list.return_value.append(
+                    create_mock_number(service_number, settings)
+                )
+            mock_twilio_services[service_key] = mock_twilio_service
+    mock_twilio_client.messaging.v1.services.list.return_value = list(
+        mock_twilio_services.values()
+    )
 
     # Mock responses for main number in Twilio
     twilio_objects: list[Mock] = []
     if config["main_number_in_twilio"]:
         twilio_objects.append(create_mock_number(settings.TWILIO_MAIN_NUMBER, settings))
     if config["main_number_in_twilio"] and config["main_number_in_twilio_service"]:
-        mock_twilio_service = mock_twilio_services[0]
+        mock_twilio_service = mock_twilio_services["main_service"]
         mock_twilio_service.phone_numbers.list.return_value.append(
             create_mock_number(settings.TWILIO_MAIN_NUMBER, settings)
         )
@@ -135,7 +160,7 @@ def setup_relay_number_test_data(
         real_number = relay_number.replace("+1301", "+1201").replace("+1306", "+1639")
         verification_date = verification_base_date + timedelta(seconds=60 * num)
         country_code = data.pop("country_code", "US")
-        service_num = data.pop("service_num", 0)
+        service_key = data.pop("service_key", "number_service")
         baker.make(
             RealPhone,
             user=user,
@@ -150,7 +175,10 @@ def setup_relay_number_test_data(
         in_relay_service = data.pop("in_relay_service", True)
         in_twilio = data.pop("in_twilio", True)
         in_twilio_service = data.pop("in_twilio_service", True)
-        dj_service = twilio_services[service_num] if in_relay_service else None
+        if in_relay_service:
+            dj_service = twilio_services.get(service_key, None)
+        else:
+            dj_service = None
         if in_relay:
             baker.make(
                 RelayNumber, user=user, number=relay_number, service=dj_service, **data
@@ -161,7 +189,10 @@ def setup_relay_number_test_data(
         if in_twilio:
             twilio_objects.append(twilio_number)
         if in_twilio and in_twilio_service:
-            tw_service = mock_twilio_services[service_num]
+            tw_service = mock_twilio_services.get(service_key, None)
+        else:
+            tw_service = None
+        if tw_service:
             tw_service.phone_numbers.list.return_value.append(twilio_number)
 
     mock_twilio_client.incoming_phone_numbers.list.return_value = twilio_objects
@@ -302,7 +333,7 @@ def test_relay_number_sync_checker_just_main(mock_twilio_client, settings) -> No
 def get_synced_counts() -> Counts:
     """Return the counts when Relay is synced with Twilio"""
     return {
-        "summary": {"ok": 10, "needs_cleaning": 0},
+        "summary": {"ok": 11, "needs_cleaning": 0},
         "relay_numbers": {
             "all": 7,
             "disabled": 1,
@@ -332,14 +363,14 @@ def get_synced_counts() -> Counts:
             "main_number_no_service": 0,
         },
         "twilio_messaging_services": {
-            "all": 2,
-            "in_both_db": 2,
+            "all": 3,
+            "in_both_db": 3,
             "only_relay_db": 0,
             "only_twilio_db": 0,
-            "synced_with_good_data": 2,
+            "synced_with_good_data": 3,
             "synced_but_bad_data": 0,
             "out_of_sync": 0,
-            "ready": 2,
+            "ready": 3,
             "spam": 0,
             "full": 0,
         },
@@ -384,10 +415,10 @@ def test_relay_number_sync_checker_synced_with_twilio(
   - Only in Twilio Database: 0 ( 0.0%)
 
 **Twilio Messaging Services**:
-- All: 2
-  - In Both Databases      : 2 (100.0%)
-    - In Sync, Good Data: 2 (100.0%)
-      - Ready to Use  : 2 (100.0%)
+- All: 3
+  - In Both Databases      : 3 (100.0%)
+    - In Sync, Good Data: 3 (100.0%)
+      - Ready to Use  : 3 (100.0%)
       - Marked as Spam: 0 (  0.0%)
       - Full          : 0 (  0.0%)
     - In Sync, Bad Data : 0 (  0.0%)
@@ -540,7 +571,8 @@ def test_relay_number_sync_checker_canada_number_in_relay_service_only(
     setup_relay_number_test_data,
 ) -> None:
     """
-    Checker detects when a Canadian number is assigned to only a Relay service.
+    RelayNumberSyncChecker detects when a Canadian number is assigned to only
+    a Relay TwilioMessagingService instance.
     """
     checker = RelayNumberSyncChecker()
     assert checker.issues() == 1
@@ -558,7 +590,8 @@ def test_relay_number_sync_checker_canada_number_in_twilio_service_only(
     setup_relay_number_test_data,
 ) -> None:
     """
-    Checker detects when a Canadian number is assigned to only a Relay service.
+    RelayNumberSyncChecker detects when a Canadian number is assigned to only
+    a Twilio Messaging Service.
     """
     checker = RelayNumberSyncChecker()
     assert checker.issues() == 1
@@ -575,6 +608,10 @@ def test_relay_number_sync_checker_canada_number_in_twilio_service_only(
 def test_relay_number_sync_checker_main_number_not_in_service(
     setup_relay_number_test_data,
 ) -> None:
+    """
+    RelayNumberSyncChecker detects when the main number is not assigned to a
+    Twilio Messaging Service.
+    """
     checker = RelayNumberSyncChecker()
     assert checker.issues() == 1
     expected_counts = get_synced_counts()
@@ -582,5 +619,47 @@ def test_relay_number_sync_checker_main_number_not_in_service(
     expected_counts["summary"]["ok"] -= 1
     expected_counts["twilio_numbers"]["main_number_in_service"] -= 1
     expected_counts["twilio_numbers"]["main_number_no_service"] += 1
+    assert checker.counts == expected_counts
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(remove_relay_service=True)
+def test_relay_number_sync_checker_only_twilio_service(
+    setup_relay_number_test_data,
+) -> None:
+    """
+    RelayNumberSyncChecker detects when a Twilio Messaging Service does not have
+    a matching Relay TwilioMessagingService instance.
+    """
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 1
+    expected_counts = get_synced_counts()
+    expected_counts["summary"]["needs_cleaning"] += 1
+    expected_counts["summary"]["ok"] -= 1
+    expected_counts["twilio_messaging_services"]["in_both_db"] -= 1
+    expected_counts["twilio_messaging_services"]["synced_with_good_data"] -= 1
+    expected_counts["twilio_messaging_services"]["ready"] -= 1
+    expected_counts["twilio_messaging_services"]["only_twilio_db"] += 1
+    assert checker.counts == expected_counts
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(remove_twilio_service=True)
+def test_relay_number_sync_checker_only_relay_service(
+    setup_relay_number_test_data,
+) -> None:
+    """
+    RelayNumberSyncChecker detects when a Relay TwilioMessagingService instance
+    does not have a matching Twilio Messaging Service.
+    """
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 1
+    expected_counts = get_synced_counts()
+    expected_counts["summary"]["needs_cleaning"] += 1
+    expected_counts["summary"]["ok"] -= 1
+    expected_counts["twilio_messaging_services"]["in_both_db"] -= 1
+    expected_counts["twilio_messaging_services"]["synced_with_good_data"] -= 1
+    expected_counts["twilio_messaging_services"]["ready"] -= 1
+    expected_counts["twilio_messaging_services"]["only_relay_db"] += 1
     assert checker.counts == expected_counts
     assert checker.clean() == 0
