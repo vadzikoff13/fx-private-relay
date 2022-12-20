@@ -10,6 +10,8 @@ from django.conf import settings
 from django.db.models import Q
 from django.utils.functional import cached_property
 
+from twilio.rest import Client
+
 from privaterelay.cleaners import (
     DetectorTask,
     CleanupData,
@@ -97,17 +99,17 @@ class _CombinedNumber:
     relay_service_channel: Optional[str] = None
 
     @property
-    def in_relay(self):
+    def in_relay(self) -> bool:
         """Return True if this number is a known Relay number."""
         return self.is_relaynumber or self.is_main_number
 
     @property
-    def twilio_only(self):
+    def twilio_only(self) -> bool:
         """Return True if this number is only in Twilio."""
         return self.is_twilio_number and not self.in_relay
 
     @property
-    def is_synced(self):
+    def is_synced(self) -> bool:
         """Return True if Relay and Twilio are in sync for this number."""
         return (
             self.in_relay
@@ -116,14 +118,14 @@ class _CombinedNumber:
         )
 
     @property
-    def has_service(self):
+    def has_service(self) -> bool:
         """Return True if this number is assigned to a service"""
         return self.twilio_service_id is not None and (
             self.is_main_number or self.relay_service_id == self.twilio_service_id
         )
 
     @property
-    def needs_service(self):
+    def needs_service(self) -> bool:
         """Return True if this number needs a Messaging Service"""
         return not self.has_service and (
             self.is_main_number or (self.is_relaynumber and self.country_code == "US")
@@ -146,7 +148,7 @@ class _CombinedNumber:
         ) or (self.is_relaynumber and self.country_code != "US")
 
     @property
-    def can_sync(self):
+    def can_sync(self) -> bool:
         """Return True if out of sync and it can be fixed automatically."""
         return (
             self.is_synced
@@ -155,7 +157,7 @@ class _CombinedNumber:
         )
 
     @property
-    def manual_sync(self):
+    def manual_sync(self) -> bool:
         """Return True if out of sync and requires manual cleanup."""
         return self.is_synced or not self.is_twilio_number
 
@@ -311,12 +313,12 @@ class _CombinedNumberData:
         return needs_sync, can_sync, manual_sync
 
     @property
-    def ok(self):
+    def ok(self) -> int:
         """Return count of items that do not need syncing"""
         return self._sync_counts()[0][False]
 
     @property
-    def needs_sync(self):
+    def needs_sync(self) -> int:
         """Return count of items that need syncing"""
         return self._sync_counts()[0][True]
 
@@ -414,6 +416,8 @@ class _CombinedService:
     relay_spam: Optional[bool] = None
     relay_size: Optional[int] = None
     relay_full: Optional[bool] = None
+    is_relay_service_channel: Optional[bool] = None
+    is_main_service_channel: Optional[bool] = None
     is_twilio_service: bool = False
     twilio_friendly_name: Optional[str] = None
     twilio_status_callback: Optional[str] = None
@@ -425,6 +429,10 @@ class _CombinedService:
     twilio_campaign_status: Optional[str] = None
 
     @property
+    def in_both_db(self) -> bool:
+        return self.is_relay_service and self.is_twilio_service
+
+    @property
     def is_synced(self) -> bool:
         return (
             self.is_relay_service
@@ -434,6 +442,39 @@ class _CombinedService:
             and self.relay_campaign_use_case
             == self.twilio_campaign_us_app_to_person_usecase
             and self.relay_campaign_status == self.twilio_campaign_status
+        )
+
+    @property
+    def has_good_data(self) -> bool:
+        """Return True if our channels have good data."""
+        if not (self.is_relay_service_channel or self.is_main_service_channel):
+            return True  # Unknown Relay channels are assumed valid
+
+        if self.is_main_service_channel:
+            expected_ua2p_usecase = "ACCOUNT_NOTIFICATION"
+        else:
+            expected_ua2p_usecase = "PROXY"
+        return (
+            self.twilio_status_callback is None
+            and self.twilio_us_app_to_person_registered is True
+            and self.twilio_usecase == "notifications"
+            and self.twilio_use_inbound_webhook_on_number is True
+            and self.twilio_campaign_us_app_to_person_usecase == expected_ua2p_usecase
+        )
+
+    @property
+    def can_fix_data(self) -> bool:
+        """Return True if our channel data can be fixed."""
+        if not (self.is_relay_service_channel or self.is_main_service_channel):
+            return False  # Can't fix a channel that isn't ours
+        if self.is_main_service_channel:
+            expected_ua2p_usecase = "ACCOUNT_NOTIFICATION"
+        else:
+            expected_ua2p_usecase = "PROXY"
+        # Can fix anything but wrong US App To Person campaign
+        return (
+            self.twilio_us_app_to_person_registered is False
+            or self.twilio_campaign_us_app_to_person_usecase == expected_ua2p_usecase
         )
 
     @property
@@ -452,7 +493,10 @@ class _CombinedService:
 
     @property
     def manual_sync(self) -> bool:
-        return self.is_relay_service and not self.is_twilio_service
+        return (self.is_relay_service and not self.is_twilio_service) or (
+            bool(self.is_relay_service_channel or self.is_main_service_channel)
+            and not self.can_fix_data
+        )
 
 
 class _CombinedServiceData:
@@ -462,7 +506,11 @@ class _CombinedServiceData:
         self,
         relay_services: list[_RelayServiceData],
         twilio_services: list[_TwilioServiceData],
+        relay_service_channel: str,
+        main_service_channel: str,
     ) -> None:
+        self.relay_service_channel = relay_service_channel
+        self.main_service_channel = main_service_channel
         self._services: dict[str, _CombinedService] = {}
 
         for relay_service in relay_services:
@@ -479,6 +527,8 @@ class _CombinedServiceData:
                 relay_spam=relay_service.spam,
                 relay_size=relay_service.size,
                 relay_full=relay_service.full,
+                is_relay_service_channel=relay_service.channel == relay_service_channel,
+                is_main_service_channel=relay_service.channel == main_service_channel,
             )
 
         for twilio_service in twilio_services:
@@ -540,71 +590,145 @@ class _CombinedServiceData:
         return self._count_by_presence[False, True]
 
     @lru_cache
-    def _sync_counts(
+    def _split_by_sync(
         self,
-    ) -> tuple[dict[bool, int], list[_CombinedService], list[_CombinedService]]:
+    ) -> tuple[list[_CombinedService], list[_CombinedService], list[_CombinedService]]:
         """
-        Return count of data, and items to sync
+        Split services by sync status for further processing.
 
         Return is a tuple:
-        - Counter (dict) with key (needs sync?)
+        - List of services in sync
         - List of services that can be automatically synced
         - List of services that need to be manually synced
         """
-        needs_sync: dict[bool, int] = Counter()
+        synced: list[_CombinedService] = []
         can_sync: list[_CombinedService] = []
         manual_sync: list[_CombinedService] = []
 
         for service in self._services.values():
             if service.is_synced:
-                needs_sync[False] += 1
+                synced.append(service)
             elif service.can_sync:
-                needs_sync[True] += 1
                 can_sync.append(service)
-            elif service.manual_sync:
-                needs_sync[True] += 1
+            else:
                 manual_sync.append(service)
-        return needs_sync, can_sync, manual_sync
+        return synced, can_sync, manual_sync
 
     @property
-    def ok(self):
-        """Return count of items that do not need syncing"""
-        return self._sync_counts()[0][False]
-
-    @property
-    def needs_sync(self):
+    def needs_sync(self) -> int:
         """Return count of items that need syncing"""
-        return self._sync_counts()[0][True]
+        _, can_sync, manual_sync = self._split_by_sync()
+        return len(can_sync) + len(manual_sync)
+
+    @property
+    def out_of_sync(self) -> int:
+        """Return count of items that are in both databases but need syncing"""
+        return len(
+            list(
+                service
+                for service in self._services.values()
+                if service.in_both_db and not service.is_synced
+            )
+        )
+
+    @lru_cache
+    def _split_by_data(self) -> tuple[list[_CombinedService], list[_CombinedService]]:
+        """
+        Split synced services by data status for further processing.
+
+        Return is a tuple:
+        - List of synced services with good data
+        - List of synced services with bad data
+        """
+        good_data: list[_CombinedService] = []
+        bad_data: list[_CombinedService] = []
+        for service in self._split_by_sync()[0]:
+            if service.has_good_data:
+                good_data.append(service)
+            else:
+                bad_data.append(service)
+        return good_data, bad_data
+
+    @property
+    def needs_fix(self) -> int:
+        """Return count of items that need fixing"""
+        _, bad_data = self._split_by_data()
+        return len(bad_data)
 
     @property
     def synced_with_good_data_count(self) -> int:
-        return self.in_both_db_count
+        return len(self._split_by_data()[0])
 
     @property
-    def synced_but_bad_data_count(self) -> int:
-        return 0
-
-    @property
-    def out_of_sync_count(self) -> int:
-        return 0
-
-    @property
-    def ready_count(self) -> int:
+    def ok(self) -> int:
+        """Return count of items that do not need syncing or fixing"""
         return self.synced_with_good_data_count
 
     @property
+    def synced_but_bad_data_count(self) -> int:
+        return len(self._split_by_data()[1])
+
+    @property
+    def _count_by_readiness(self) -> dict[str, int]:
+        """
+        Count synced, good data services by readiness to use
+
+        Return is a Counter with keys:
+        * ready - ready for new numbers
+        * campaign_pending - the 10 DLC campaign is pending review
+        * not_ours - the service is for another Relay channel
+        * spam - the service has been marked as spammy
+        * full - the service has been marked as full
+        """
+        readiness: dict[str, int] = Counter()
+        for service in self._split_by_data()[0]:
+            if service.relay_full:
+                readiness["full"] += 1
+            elif service.relay_spam:
+                readiness["spam"] += 1
+            elif not (
+                service.is_relay_service_channel or service.is_main_service_channel
+            ):
+                readiness["not_ours"] += 1
+            elif service.relay_campaign_status == "PENDING":
+                readiness["campaign_pending"] += 1
+            elif service.relay_campaign_status != "VERIFIED":
+                readiness["campaign_failed_or_other"] += 1
+            else:
+                readiness["ready"] += 1
+        return readiness
+
+    @property
+    def ready_count(self) -> int:
+        return self._count_by_readiness["ready"]
+
+    @property
+    def pending_count(self) -> int:
+        return self._count_by_readiness["campaign_pending"]
+
+    @property
+    def failed_count(self) -> int:
+        return self._count_by_readiness["campaign_failed_or_other"]
+
+    @property
+    def not_ours_count(self) -> int:
+        return self._count_by_readiness["not_ours"]
+
+    @property
     def spam_count(self) -> int:
-        return 0
+        return self._count_by_readiness["spam"]
 
     @property
     def full_count(self) -> int:
-        return 0
+        return self._count_by_readiness["full"]
 
     def get_cleanup_data(self) -> dict[str, list[_CombinedService]]:
-        _, can_sync, manual_sync = self._sync_counts()
+        _, can_sync, manual_sync = self._split_by_sync()
+        _, bad_data = self._split_by_data()
         return {
             "services_to_sync": can_sync,
             "services_to_manually_sync": manual_sync,
+            "services_to_fix": bad_data,
         }
 
 
@@ -648,13 +772,17 @@ class RelayNumberSyncChecker(DetectorTask):
         service_data = _CombinedServiceData(
             relay_services=twilio_messaging_service_data,
             twilio_services=twilio_services,
+            relay_service_channel=settings.TWILIO_CHANNEL,
+            main_service_channel=settings.TWILIO_MAIN_NUMBER_CHANNEL,
         )
 
         # Gather initial counts
         counts: Counts = {
             "summary": {
                 "ok": number_data.ok + service_data.ok,
-                "needs_cleaning": number_data.needs_sync + service_data.needs_sync,
+                "needs_cleaning": number_data.needs_sync
+                + service_data.needs_sync
+                + service_data.needs_fix,
             },
             "relay_numbers": self._relaynumber_usage_counts(),
             "twilio_numbers": {
@@ -715,13 +843,16 @@ class RelayNumberSyncChecker(DetectorTask):
                 {
                     "synced_with_good_data": service_data.synced_with_good_data_count,
                     "synced_but_bad_data": service_data.synced_but_bad_data_count,
-                    "out_of_sync": service_data.out_of_sync_count,
+                    "out_of_sync": service_data.out_of_sync,
                 }
             )
         if service_data.synced_with_good_data_count != 0:
             counts["twilio_messaging_services"].update(
                 {
                     "ready": service_data.ready_count,
+                    "pending": service_data.pending_count,
+                    "failed": service_data.failed_count,
+                    "not_ours": service_data.not_ours_count,
                     "spam": service_data.spam_count,
                     "full": service_data.full_count,
                 }
@@ -788,11 +919,11 @@ class RelayNumberSyncChecker(DetectorTask):
             )
         )
 
-    def _twilio_numbers(self, client) -> list[str]:
+    def _twilio_numbers(self, client: Client) -> list[str]:
         """Get Twilio's number data."""
         return [obj.phone_number for obj in client.incoming_phone_numbers.list()]
 
-    def _twilio_services(self, client) -> list[_TwilioServiceData]:
+    def _twilio_services(self, client: Client) -> list[_TwilioServiceData]:
         """Get Twilio's service data."""
         data = []
         for service in client.messaging.v1.services.list():
@@ -892,14 +1023,17 @@ class RelayNumberSyncChecker(DetectorTask):
         in_sync_good = SubSectionSpec("In Sync, Good Data", key="synced_with_good_data")
         in_sync_bad = SubSectionSpec("In Sync, Bad Data", key="synced_but_bad_data")
         out_of_sync = SubSectionSpec("Out of Sync")
+        not_ours = SubSectionSpec("Not Ours", key="not_ours")
         ready = SubSectionSpec("Ready to Use", key="ready")
+        in_progress = SubSectionSpec("Campaign Verification in Progress", key="pending")
+        failed = SubSectionSpec("Campaign Failed or Unknown Status", key="failed")
         spam = SubSectionSpec("Marked as Spam", key="spam")
         full = SubSectionSpec("Full")
 
         service_all = SubSectionSpec("All", is_total_count=True)
         service_all.subsections = [service_in_both, only_relay, only_twilio]
         service_in_both.subsections = [in_sync_good, in_sync_bad, out_of_sync]
-        in_sync_good.subsections = [ready, spam, full]
+        in_sync_good.subsections = [ready, in_progress, failed, not_ours, spam, full]
 
         # Dynamically add the country code subsections
         counts = self.counts

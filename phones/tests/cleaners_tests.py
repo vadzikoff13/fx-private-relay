@@ -5,6 +5,7 @@ from datetime import timedelta
 from unittest.mock import Mock
 from uuid import uuid4
 
+from django.conf import LazySettings
 from django.utils import timezone
 
 from twilio.rest import Client
@@ -13,14 +14,15 @@ from model_bakery import baker
 from typing import Any
 import pytest
 
-from phones.cleaners import Counts, RelayNumberSyncChecker
+from phones.cleaners import RelayNumberSyncChecker
 from phones.models import RealPhone, RelayNumber, TwilioMessagingService
+from privaterelay.cleaners import Counts
 
 from .models_tests import make_phone_test_user
 
 
 @pytest.fixture(autouse=True)
-def mock_twilio_settings(settings) -> None:
+def mock_twilio_settings(settings: LazySettings) -> None:
     """Override settings to test Twilio accounts"""
     settings.PHONES_ENABLED = True
     settings.TWILIO_ACCOUNT_SID = f"AC{uuid4().hex}"
@@ -36,12 +38,11 @@ def mock_twilio_settings(settings) -> None:
 @pytest.fixture
 def setup_relay_number_test_data(
     mock_twilio_client: Client,
-    db,
-    request,
-    settings,
+    db: None,
+    request: Any,
+    settings: LazySettings,
 ) -> None:
     """Setup Relay Numbers and mock Twilio responses for testing."""
-
     # Load per-test configuration via marks
     config_mark = request.node.get_closest_marker("relay_test_config")
     config_kwargs = config_mark.kwargs if config_mark else {}
@@ -75,16 +76,19 @@ def setup_relay_number_test_data(
             # My deployment's service for RelayNumbers
             "friendly_name": "My Firefox Relay 1",
             "channel": settings.TWILIO_CHANNEL,
+            "campaign_use_case": "PROXY",
         },
         "main_service": {
             # My deployment's service for the main number
             "friendly_name": "My Firefox Relay Main Service",
             "channel": settings.TWILIO_MAIN_NUMBER_CHANNEL,
+            "campaign_use_case": "ACCOUNT_NOTIFICATION",
         },
         "other_service": {
             # A different deployment's service
             "friendly_name": "Stage Testing 1",
             "channel": "unknown",
+            "campaign_use_case": "PROXY",
             "twilio_numbers": ["+14015550001"],
             "in_relay": not config["remove_relay_service"],
             "in_twilio": not config["remove_twilio_service"],
@@ -102,14 +106,17 @@ def setup_relay_number_test_data(
                 service_id=service_id,
                 friendly_name=data["friendly_name"],
                 use_case="notifications",
-                campaign_use_case="PROXY",
+                campaign_use_case=data["campaign_use_case"],
                 campaign_status="VERIFIED",
                 channel=data["channel"],
             )
 
         if in_twilio:
             mock_twilio_service = create_mock_service(
-                service_id, data["friendly_name"], settings
+                service_id=service_id,
+                friendly_name=data["friendly_name"],
+                campaign_use_case=data["campaign_use_case"],
+                settings=settings,
             )
             for service_number in twilio_numbers:
                 mock_twilio_service.phone_numbers.list.return_value.append(
@@ -123,6 +130,7 @@ def setup_relay_number_test_data(
     # Mock responses for main number in Twilio
     twilio_objects: list[Mock] = []
     if config["main_number_in_twilio"]:
+        assert settings.TWILIO_MAIN_NUMBER
         twilio_objects.append(create_mock_number(settings.TWILIO_MAIN_NUMBER, settings))
     if config["main_number_in_twilio"] and config["main_number_in_twilio_service"]:
         if config["main_number_in_wrong_service"]:
@@ -130,6 +138,7 @@ def setup_relay_number_test_data(
         else:
             service_key = "main_service"
         mock_twilio_service = mock_twilio_services[service_key]
+        assert settings.TWILIO_MAIN_NUMBER
         mock_twilio_service.phone_numbers.list.return_value.append(
             create_mock_number(settings.TWILIO_MAIN_NUMBER, settings)
         )
@@ -214,7 +223,9 @@ def setup_relay_number_test_data(
     mock_twilio_client.incoming_phone_numbers.list.return_value = twilio_objects
 
 
-def create_mock_service(service_id: str, friendly_name: str, settings) -> Mock:
+def create_mock_service(
+    service_id: str, friendly_name: str, campaign_use_case: str, settings: LazySettings
+) -> Mock:
     """
     Create a mock Service instance.
 
@@ -227,19 +238,25 @@ def create_mock_service(service_id: str, friendly_name: str, settings) -> Mock:
         account_sid=settings.TWILIO_ACCOUNT_SID,
         sid=service_id,
         friendly_name=friendly_name,
-        status_callback=f"{settings.SITE_ORIGIN}/api/v1/sms_status",
+        status_callback=None,
         us_app_to_person_registered=True,
         usecase="notifications",
         use_inbound_webhook_on_number=True,
     )
     service.phone_numbers.list.return_value = []
     service.us_app_to_person.list.return_value = [
-        create_mock_us_app_to_person(service_id, settings)
+        create_mock_us_app_to_person(
+            messaging_service_sid=service_id,
+            usecase=campaign_use_case,
+            settings=settings,
+        )
     ]
     return service
 
 
-def create_mock_us_app_to_person(messaging_service_sid, settings) -> Mock:
+def create_mock_us_app_to_person(
+    messaging_service_sid: str, usecase: str, settings: LazySettings
+) -> Mock:
     """
     Create a mock US App to Person (brand registration) instance
 
@@ -255,11 +272,11 @@ def create_mock_us_app_to_person(messaging_service_sid, settings) -> Mock:
         messaging_service_sid=messaging_service_sid,
         sid=f"QE{uuid4().hex}",
         campaign_status="VERIFIED",
-        us_app_to_person_usecase="PROXY",
+        us_app_to_person_usecase=usecase,
     )
 
 
-def create_mock_number(phone_number: str, settings) -> Mock:
+def create_mock_number(phone_number: str, settings: LazySettings) -> Mock:
     """
     Create a mock IncomingPhoneNumberInstance.
 
@@ -330,8 +347,11 @@ def test_relay_number_sync_checker_no_data() -> None:
 
 
 @pytest.mark.django_db
-def test_relay_number_sync_checker_just_main(mock_twilio_client, settings) -> None:
+def test_relay_number_sync_checker_just_main(
+    mock_twilio_client: Client, settings: LazySettings
+) -> None:
     """RelayNumberSyncChecker notes when just the main number is in Twilio."""
+    assert settings.TWILIO_MAIN_NUMBER
     mock_twilio_client.incoming_phone_numbers.list.return_value = [
         create_mock_number(settings.TWILIO_MAIN_NUMBER, settings)
     ]
@@ -390,7 +410,10 @@ def get_synced_counts() -> Counts:
             "synced_with_good_data": 3,
             "synced_but_bad_data": 0,
             "out_of_sync": 0,
-            "ready": 3,
+            "ready": 2,
+            "pending": 0,
+            "failed": 0,
+            "not_ours": 1,
             "spam": 0,
             "full": 0,
         },
@@ -398,7 +421,7 @@ def get_synced_counts() -> Counts:
 
 
 def test_relay_number_sync_checker_synced_with_twilio(
-    setup_relay_number_test_data,
+    setup_relay_number_test_data: None,
 ) -> None:
     """RelayNumberSyncChecker detects that all phone numbers are synced."""
     checker = RelayNumberSyncChecker()
@@ -441,9 +464,12 @@ def test_relay_number_sync_checker_synced_with_twilio(
 - All: 3
   - In Both Databases      : 3 (100.0%)
     - In Sync, Good Data: 3 (100.0%)
-      - Ready to Use  : 3 (100.0%)
-      - Marked as Spam: 0 (  0.0%)
-      - Full          : 0 (  0.0%)
+      - Ready to Use                     : 2 (66.7%)
+      - Campaign Verification in Progress: 0 ( 0.0%)
+      - Campaign Failed or Unknown Status: 0 ( 0.0%)
+      - Not Ours                         : 1 (33.3%)
+      - Marked as Spam                   : 0 ( 0.0%)
+      - Full                             : 0 ( 0.0%)
     - In Sync, Bad Data : 0 (  0.0%)
     - Out of Sync       : 0 (  0.0%)
   - Only in Relay Database : 0 (  0.0%)
@@ -453,7 +479,7 @@ def test_relay_number_sync_checker_synced_with_twilio(
 
 @pytest.mark.relay_test_config(main_number_in_twilio=False)
 def test_relay_number_sync_checker_main_not_in_twilio(
-    setup_relay_number_test_data,
+    setup_relay_number_test_data: None,
 ) -> None:
     """RelayNumberSyncChecker detects when the main number is not in Twilio."""
     checker = RelayNumberSyncChecker()
@@ -472,7 +498,7 @@ def test_relay_number_sync_checker_main_not_in_twilio(
 
 @pytest.mark.relay_test_config(remove_number_from_twilio=True)
 def test_relay_number_sync_checker_relay_number_not_in_twilio(
-    setup_relay_number_test_data,
+    setup_relay_number_test_data: None,
 ) -> None:
     """RelayNumberSyncChecker detects when a RelayNumber is not in Twilio."""
     checker = RelayNumberSyncChecker()
@@ -491,7 +517,7 @@ def test_relay_number_sync_checker_relay_number_not_in_twilio(
 
 @pytest.mark.relay_test_config(remove_number_from_relay=True)
 def test_relay_number_sync_checker_twilio_number_not_in_relay(
-    setup_relay_number_test_data,
+    setup_relay_number_test_data: None,
 ) -> None:
     """
     RelayNumberSyncChecker detects when a Twilio Number is not a RelayNumber.
@@ -518,7 +544,7 @@ def test_relay_number_sync_checker_twilio_number_not_in_relay(
 
 @pytest.mark.relay_test_config(remove_number_from_relay_service=True)
 def test_relay_number_sync_checker_relay_number_not_in_relay_service(
-    setup_relay_number_test_data,
+    setup_relay_number_test_data: None,
 ) -> None:
     """
     RelayNumberSyncChecker detects when a number is in a Twilio Messaging
@@ -538,7 +564,7 @@ def test_relay_number_sync_checker_relay_number_not_in_relay_service(
 
 @pytest.mark.relay_test_config(remove_number_from_twilio_service=True)
 def test_relay_number_sync_checker_relay_number_not_in_twilio_service(
-    setup_relay_number_test_data,
+    setup_relay_number_test_data: None,
 ) -> None:
     """
     RelayNumberSyncChecker detects when a number is in a Twilio Messaging
@@ -560,7 +586,7 @@ def test_relay_number_sync_checker_relay_number_not_in_twilio_service(
     remove_number_from_relay_service=True, remove_number_from_twilio_service=True
 )
 def test_relay_number_sync_checker_relay_number_not_in_service(
-    setup_relay_number_test_data,
+    setup_relay_number_test_data: None,
 ) -> None:
     checker = RelayNumberSyncChecker()
     assert checker.issues() == 1
@@ -578,7 +604,7 @@ def test_relay_number_sync_checker_relay_number_not_in_service(
     add_CA_number_to_twilio_service=True, add_CA_number_to_relay_service=True
 )
 def test_relay_number_sync_checker_canada_number_in_service(
-    setup_relay_number_test_data,
+    setup_relay_number_test_data: None,
 ) -> None:
     """
     Checker detects when a Canadian number is assigned to a service.
@@ -599,7 +625,7 @@ def test_relay_number_sync_checker_canada_number_in_service(
 
 @pytest.mark.relay_test_config(add_CA_number_to_relay_service=True)
 def test_relay_number_sync_checker_canada_number_in_relay_service_only(
-    setup_relay_number_test_data,
+    setup_relay_number_test_data: None,
 ) -> None:
     """
     RelayNumberSyncChecker detects when a Canadian number is assigned to only
@@ -618,7 +644,7 @@ def test_relay_number_sync_checker_canada_number_in_relay_service_only(
 
 @pytest.mark.relay_test_config(add_CA_number_to_twilio_service=True)
 def test_relay_number_sync_checker_canada_number_in_twilio_service_only(
-    setup_relay_number_test_data,
+    setup_relay_number_test_data: None,
 ) -> None:
     """
     RelayNumberSyncChecker detects when a Canadian number is assigned to only
@@ -637,7 +663,7 @@ def test_relay_number_sync_checker_canada_number_in_twilio_service_only(
 
 @pytest.mark.relay_test_config(main_number_in_wrong_service=True)
 def test_relay_number_sync_checker_main_number_in_wrong_service(
-    setup_relay_number_test_data,
+    setup_relay_number_test_data: None,
 ) -> None:
     """
     RelayNumberSyncChecker detects when the main number is not assigned to a
@@ -656,7 +682,7 @@ def test_relay_number_sync_checker_main_number_in_wrong_service(
 
 @pytest.mark.relay_test_config(relay_number_in_main_service=True)
 def test_relay_number_sync_checker_relay_number_in_wrong_service(
-    setup_relay_number_test_data,
+    setup_relay_number_test_data: None,
 ) -> None:
     """
     RelayNumberSyncChecker detects when the main number is not assigned to a
@@ -675,7 +701,7 @@ def test_relay_number_sync_checker_relay_number_in_wrong_service(
 
 @pytest.mark.relay_test_config(relay_number_in_other_service=True)
 def test_relay_number_sync_checker_relay_number_in_other_service(
-    setup_relay_number_test_data,
+    setup_relay_number_test_data: None,
 ) -> None:
     """
     RelayNumberSyncChecker detects when the main number is not assigned to a
@@ -694,7 +720,7 @@ def test_relay_number_sync_checker_relay_number_in_other_service(
 
 @pytest.mark.relay_test_config(main_number_in_twilio_service=False)
 def test_relay_number_sync_checker_main_number_not_in_service(
-    setup_relay_number_test_data,
+    setup_relay_number_test_data: None,
 ) -> None:
     """
     RelayNumberSyncChecker detects when the main number is not assigned to a
@@ -713,7 +739,7 @@ def test_relay_number_sync_checker_main_number_not_in_service(
 
 @pytest.mark.relay_test_config(remove_relay_service=True)
 def test_relay_number_sync_checker_only_twilio_service(
-    setup_relay_number_test_data,
+    setup_relay_number_test_data: None,
 ) -> None:
     """
     RelayNumberSyncChecker detects when a Twilio Messaging Service does not have
@@ -725,16 +751,16 @@ def test_relay_number_sync_checker_only_twilio_service(
     expected_counts["summary"]["needs_cleaning"] += 1
     expected_counts["summary"]["ok"] -= 1
     expected_counts["twilio_messaging_services"]["in_both_db"] -= 1
-    expected_counts["twilio_messaging_services"]["synced_with_good_data"] -= 1
-    expected_counts["twilio_messaging_services"]["ready"] -= 1
     expected_counts["twilio_messaging_services"]["only_twilio_db"] += 1
+    expected_counts["twilio_messaging_services"]["synced_with_good_data"] -= 1
+    expected_counts["twilio_messaging_services"]["not_ours"] -= 1
     assert checker.counts == expected_counts
     assert checker.clean() == 0
 
 
 @pytest.mark.relay_test_config(remove_twilio_service=True)
 def test_relay_number_sync_checker_only_relay_service(
-    setup_relay_number_test_data,
+    setup_relay_number_test_data: None,
 ) -> None:
     """
     RelayNumberSyncChecker detects when a Relay TwilioMessagingService instance
@@ -747,7 +773,7 @@ def test_relay_number_sync_checker_only_relay_service(
     expected_counts["summary"]["ok"] -= 1
     expected_counts["twilio_messaging_services"]["in_both_db"] -= 1
     expected_counts["twilio_messaging_services"]["synced_with_good_data"] -= 1
-    expected_counts["twilio_messaging_services"]["ready"] -= 1
+    expected_counts["twilio_messaging_services"]["not_ours"] -= 1
     expected_counts["twilio_messaging_services"]["only_relay_db"] += 1
     assert checker.counts == expected_counts
     assert checker.clean() == 0
