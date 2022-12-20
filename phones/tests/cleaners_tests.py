@@ -50,12 +50,15 @@ def setup_relay_number_test_data(
         "add_CA_number_to_twilio_service": False,
         "main_number_in_twilio": True,
         "main_number_in_twilio_service": True,
+        "main_number_in_wrong_service": False,
         "remove_number_from_relay": False,
         "remove_number_from_relay_service": False,
         "remove_number_from_twilio": False,
         "remove_number_from_twilio_service": False,
         "remove_relay_service": False,
         "remove_twilio_service": False,
+        "relay_number_in_main_service": False,
+        "relay_number_in_other_service": False,
     }
     config = {
         key: config_kwargs.get(key, default) for key, default in config_defaults.items()
@@ -122,12 +125,22 @@ def setup_relay_number_test_data(
     if config["main_number_in_twilio"]:
         twilio_objects.append(create_mock_number(settings.TWILIO_MAIN_NUMBER, settings))
     if config["main_number_in_twilio"] and config["main_number_in_twilio_service"]:
-        mock_twilio_service = mock_twilio_services["main_service"]
+        if config["main_number_in_wrong_service"]:
+            service_key = "number_service"
+        else:
+            service_key = "main_service"
+        mock_twilio_service = mock_twilio_services[service_key]
         mock_twilio_service.phone_numbers.list.return_value.append(
             create_mock_number(settings.TWILIO_MAIN_NUMBER, settings)
         )
 
     # Configure test Relay numbers
+    if config["relay_number_in_main_service"]:
+        test_service_key = "main_service"
+    elif config["relay_number_in_other_service"]:
+        test_service_key = "other_service"
+    else:
+        test_service_key = "number_service"
     number_data: dict[str, dict[str, Any]] = {
         "+13015550001": {},
         "+13015550002": {
@@ -146,7 +159,10 @@ def setup_relay_number_test_data(
             "in_relay_service": config["add_CA_number_to_relay_service"],
             "in_twilio_service": config["add_CA_number_to_twilio_service"],
         },
-        "+13015550005": {"calls_blocked": 1},
+        "+13015550005": {
+            "calls_blocked": 1,
+            "service_key": test_service_key,
+        },
         "+13015550006": {"texts_forwarded": 1, "calls_forwarded": 1},
         "+13015550007": {"enabled": False},
     }
@@ -326,6 +342,7 @@ def test_relay_number_sync_checker_just_main(mock_twilio_client, settings) -> No
     expected_counts["twilio_numbers"]["main_number"] = 1
     expected_counts["twilio_numbers"]["main_number_in_service"] = 0
     expected_counts["twilio_numbers"]["main_number_no_service"] = 1
+    expected_counts["twilio_numbers"]["main_number_wrong_service"] = 0
     assert checker.counts == expected_counts
     assert checker.clean() == 0
 
@@ -355,12 +372,15 @@ def get_synced_counts() -> Counts:
             "cc_CA_only_twilio_service": 0,
             "cc_US": 6,
             "cc_US_in_service": 6,
+            "cc_US_correct_service": 6,
+            "cc_US_wrong_service": 0,
             "cc_US_no_service": 0,
             "cc_US_only_relay_service": 0,
             "cc_US_only_twilio_service": 0,
             "main_number": 1,
             "main_number_in_service": 1,
             "main_number_no_service": 0,
+            "main_number_wrong_service": 0,
         },
         "twilio_messaging_services": {
             "all": 3,
@@ -405,12 +425,15 @@ def test_relay_number_sync_checker_synced_with_twilio(
       - Not in a Messaging Service (OK) : 1 (100.0%)
     - Country Code US: 6 (85.7%)
       - In a Messaging Service          : 6 (100.0%)
+        - In Correct Service: 6 (100.0%)
+        - In Wrong Service  : 0 (  0.0%)
       - Only in Relay Messaging Service : 0 (  0.0%)
       - Only in Twilio Messaging Service: 0 (  0.0%)
       - Not in a Messaging Service      : 0 (  0.0%)
   - Main Number in Twilio  : 1 (12.5%)
-    - In a Messaging Service    : 1 (100.0%)
-    - Not in a Messaging Service: 0 (  0.0%)
+    - In Correct Messaging Service: 1 (100.0%)
+    - In Wrong Messaging Service  : 0 (  0.0%)
+    - Not in a Messaging Service  : 0 (  0.0%)
   - Only in Relay Database : 0 ( 0.0%)
   - Only in Twilio Database: 0 ( 0.0%)
 
@@ -442,6 +465,7 @@ def test_relay_number_sync_checker_main_not_in_twilio(
     expected_counts["twilio_numbers"]["main_number"] = 0
     del expected_counts["twilio_numbers"]["main_number_in_service"]
     del expected_counts["twilio_numbers"]["main_number_no_service"]
+    del expected_counts["twilio_numbers"]["main_number_wrong_service"]
     assert checker.counts == expected_counts
     assert checker.clean() == 0
 
@@ -457,6 +481,7 @@ def test_relay_number_sync_checker_relay_number_not_in_twilio(
     expected_counts["summary"]["needs_cleaning"] += 1
     expected_counts["summary"]["ok"] -= 1
     expected_counts["twilio_numbers"]["cc_US_in_service"] -= 1
+    expected_counts["twilio_numbers"]["cc_US_correct_service"] -= 1
     expected_counts["twilio_numbers"]["cc_US_only_relay_service"] += 1
     expected_counts["twilio_numbers"]["in_both_db"] -= 1
     expected_counts["twilio_numbers"]["only_relay_db"] += 1
@@ -484,6 +509,7 @@ def test_relay_number_sync_checker_twilio_number_not_in_relay(
     expected_counts["relay_numbers"]["used_texts"] -= 1
     expected_counts["twilio_numbers"]["cc_US"] -= 1
     expected_counts["twilio_numbers"]["cc_US_in_service"] -= 1
+    expected_counts["twilio_numbers"]["cc_US_correct_service"] -= 1
     expected_counts["twilio_numbers"]["in_both_db"] -= 1
     expected_counts["twilio_numbers"]["only_twilio_db"] += 1
     assert checker.counts == expected_counts
@@ -504,6 +530,7 @@ def test_relay_number_sync_checker_relay_number_not_in_relay_service(
     expected_counts["summary"]["needs_cleaning"] += 1
     expected_counts["summary"]["ok"] -= 1
     expected_counts["twilio_numbers"]["cc_US_in_service"] -= 1
+    expected_counts["twilio_numbers"]["cc_US_correct_service"] -= 1
     expected_counts["twilio_numbers"]["cc_US_only_twilio_service"] += 1
     assert checker.counts == expected_counts
     assert checker.clean() == 0
@@ -523,6 +550,7 @@ def test_relay_number_sync_checker_relay_number_not_in_twilio_service(
     expected_counts["summary"]["needs_cleaning"] += 1
     expected_counts["summary"]["ok"] -= 1
     expected_counts["twilio_numbers"]["cc_US_in_service"] -= 1
+    expected_counts["twilio_numbers"]["cc_US_correct_service"] -= 1
     expected_counts["twilio_numbers"]["cc_US_only_relay_service"] += 1
     assert checker.counts == expected_counts
     assert checker.clean() == 0
@@ -540,6 +568,7 @@ def test_relay_number_sync_checker_relay_number_not_in_service(
     expected_counts["summary"]["needs_cleaning"] += 1
     expected_counts["summary"]["ok"] -= 1
     expected_counts["twilio_numbers"]["cc_US_in_service"] -= 1
+    expected_counts["twilio_numbers"]["cc_US_correct_service"] -= 1
     expected_counts["twilio_numbers"]["cc_US_no_service"] += 1
     assert checker.counts == expected_counts
     assert checker.clean() == 0
@@ -561,6 +590,8 @@ def test_relay_number_sync_checker_canada_number_in_service(
     assert checker.issues() == 0
     expected_counts = get_synced_counts()
     expected_counts["twilio_numbers"]["cc_CA_in_service"] += 1
+    expected_counts["twilio_numbers"]["cc_CA_correct_service"] = 1
+    expected_counts["twilio_numbers"]["cc_CA_wrong_service"] = 0
     expected_counts["twilio_numbers"]["cc_CA_no_service"] -= 1
     assert checker.counts == expected_counts
     assert checker.clean() == 0
@@ -600,6 +631,63 @@ def test_relay_number_sync_checker_canada_number_in_twilio_service_only(
     expected_counts["summary"]["needs_cleaning"] += 1
     expected_counts["twilio_numbers"]["cc_CA_only_twilio_service"] += 1
     expected_counts["twilio_numbers"]["cc_CA_no_service"] -= 1
+    assert checker.counts == expected_counts
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(main_number_in_wrong_service=True)
+def test_relay_number_sync_checker_main_number_in_wrong_service(
+    setup_relay_number_test_data,
+) -> None:
+    """
+    RelayNumberSyncChecker detects when the main number is not assigned to a
+    Twilio Messaging Service.
+    """
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 1
+    expected_counts = get_synced_counts()
+    expected_counts["summary"]["needs_cleaning"] += 1
+    expected_counts["summary"]["ok"] -= 1
+    expected_counts["twilio_numbers"]["main_number_in_service"] -= 1
+    expected_counts["twilio_numbers"]["main_number_wrong_service"] += 1
+    assert checker.counts == expected_counts
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(relay_number_in_main_service=True)
+def test_relay_number_sync_checker_relay_number_in_wrong_service(
+    setup_relay_number_test_data,
+) -> None:
+    """
+    RelayNumberSyncChecker detects when the main number is not assigned to a
+    Twilio Messaging Service.
+    """
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 1
+    expected_counts = get_synced_counts()
+    expected_counts["summary"]["needs_cleaning"] += 1
+    expected_counts["summary"]["ok"] -= 1
+    expected_counts["twilio_numbers"]["cc_US_correct_service"] -= 1
+    expected_counts["twilio_numbers"]["cc_US_wrong_service"] += 1
+    assert checker.counts == expected_counts
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(relay_number_in_other_service=True)
+def test_relay_number_sync_checker_relay_number_in_other_service(
+    setup_relay_number_test_data,
+) -> None:
+    """
+    RelayNumberSyncChecker detects when the main number is not assigned to a
+    Twilio Messaging Service.
+    """
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 1
+    expected_counts = get_synced_counts()
+    expected_counts["summary"]["needs_cleaning"] += 1
+    expected_counts["summary"]["ok"] -= 1
+    expected_counts["twilio_numbers"]["cc_US_correct_service"] -= 1
+    expected_counts["twilio_numbers"]["cc_US_wrong_service"] += 1
     assert checker.counts == expected_counts
     assert checker.clean() == 0
 

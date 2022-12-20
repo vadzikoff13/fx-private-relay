@@ -28,6 +28,7 @@ class _RelayNumberData:
     number: str
     country_code: str
     service_id: Optional[str]
+    service_channel: Optional[str]
 
 
 @dataclass
@@ -93,6 +94,7 @@ class _CombinedNumber:
     is_twilio_number: bool = False
     relay_service_id: Optional[str] = None
     twilio_service_id: Optional[str] = None
+    relay_service_channel: Optional[str] = None
 
     @property
     def in_relay(self):
@@ -127,6 +129,22 @@ class _CombinedNumber:
             self.is_main_number or (self.is_relaynumber and self.country_code == "US")
         )
 
+    def has_correct_service(self, relay_channel: str, main_channel: str) -> bool:
+        """
+        Returns True if this number is assigned to the correct service, or is
+        unassigned and does not need to be assigned.
+        """
+        return (
+            self.has_service
+            and (
+                (self.is_main_number and self.relay_service_channel == main_channel)
+                or (
+                    not self.is_main_number
+                    and self.relay_service_channel == relay_channel
+                )
+            )
+        ) or (self.is_relaynumber and self.country_code != "US")
+
     @property
     def can_sync(self):
         """Return True if out of sync and it can be fixed automatically."""
@@ -149,16 +167,22 @@ class _CombinedNumberData:
         self,
         main_number: Optional[str],
         relaynumber_data: list[_RelayNumberData],
+        relay_services: list[_RelayServiceData],
         twilio_numbers: list[str],
         twilio_services: list[_TwilioServiceData],
+        relay_service_channel: str,
+        main_service_channel: str,
     ) -> None:
         self.main_number = main_number
+        self.relay_service_channel = relay_service_channel
+        self.main_service_channel = main_service_channel
         self._numbers: dict[str, _CombinedNumber] = {}
         self._can_sync: Optional[list[_CombinedNumber]] = None
         self._manual_sync: Optional[list[_CombinedNumber]] = None
 
+        main_number_data = None
         if main_number:
-            self._numbers[main_number] = _CombinedNumber(
+            self._numbers[main_number] = main_number_data = _CombinedNumber(
                 number=main_number, is_main_number=True
             )
 
@@ -170,6 +194,7 @@ class _CombinedNumberData:
                 country_code=data.country_code,
                 is_relaynumber=True,
                 relay_service_id=data.service_id,
+                relay_service_channel=data.service_channel,
             )
 
         for number in twilio_numbers:
@@ -187,9 +212,16 @@ class _CombinedNumberData:
                 except KeyError:
                     pass
 
+        # Set relay service info for main number
+        if main_number_data and main_number_data.twilio_service_id:
+            for service in relay_services:
+                if service.service_id == main_number_data.twilio_service_id:
+                    main_number_data.relay_service_id = service.service_id
+                    main_number_data.relay_service_channel = service.channel
+
     @cached_property
     def main_in_twilio(self) -> bool:
-        """Return true if the main number is registered with Twilio."""
+        """Return True if the main number is registered with Twilio."""
         return (
             self.main_number is not None
             and self._numbers[self.main_number].is_twilio_number
@@ -197,10 +229,22 @@ class _CombinedNumberData:
 
     @cached_property
     def main_in_service(self) -> bool:
-        """Return true if the main number is in a Twilio Messaging Service."""
+        """Return True if the main number is in a Twilio Messaging Service."""
         return (
             self.main_number is not None
             and self._numbers[self.main_number].twilio_service_id is not None
+        )
+
+    @cached_property
+    def main_in_correct_service(self) -> bool:
+        """Return True if the main number is in TWILIO_MAIN_NUMBER_CHANNEL."""
+        return (
+            self.main_number is not None
+            and self._numbers[self.main_number].twilio_service_id is not None
+            and self._numbers[self.main_number].has_correct_service(
+                relay_channel=self.relay_service_channel,
+                main_channel=self.main_service_channel,
+            )
         )
 
     @cached_property
@@ -254,7 +298,9 @@ class _CombinedNumberData:
         manual_sync: list[_CombinedNumber] = []
 
         for number in self._numbers.values():
-            if number.is_synced and not number.needs_service:
+            if number.is_synced and number.has_correct_service(
+                self.relay_service_channel, self.main_service_channel
+            ):
                 needs_sync[False] += 1
             elif number.can_sync:
                 needs_sync[True] += 1
@@ -294,7 +340,7 @@ class _CombinedNumberData:
 
     @lru_cache
     def _service_count_by_country(
-        self, country_code=str
+        self, country_code: str
     ) -> dict[tuple[bool, bool], int]:
         """
         Return count by messaging service assignment in Relay and Twilio.
@@ -326,6 +372,32 @@ class _CombinedNumberData:
     def no_service_count(self, country_code: str) -> int:
         """Return count of country's numbers assigned to no service."""
         return self._service_count_by_country(country_code)[False, False]
+
+    @lru_cache
+    def _count_by_country_and_correct_service(
+        self, country_code: str
+    ) -> dict[bool, int]:
+        """
+        Return count of service-assigned numbers.
+
+        Return a Counter (dict) with key (is in correct service?).
+        Total should be same as in_both_services_count(
+        """
+        return Counter(
+            num.has_correct_service(
+                self.relay_service_channel, self.main_service_channel
+            )
+            for num in self._numbers.values()
+            if not num.is_main_number
+            and num.country_code == country_code
+            and num.has_service
+        )
+
+    def in_correct_services_count(self, country_code: str) -> int:
+        return self._count_by_country_and_correct_service(country_code)[True]
+
+    def in_wrong_services_count(self, country_code: str) -> int:
+        return self._count_by_country_and_correct_service(country_code)[False]
 
 
 @dataclass
@@ -567,8 +639,11 @@ class RelayNumberSyncChecker(DetectorTask):
         number_data = _CombinedNumberData(
             main_number=settings.TWILIO_MAIN_NUMBER,
             relaynumber_data=relay_number_data,
+            relay_services=twilio_messaging_service_data,
             twilio_numbers=twilio_numbers,
             twilio_services=twilio_services,
+            relay_service_channel=settings.TWILIO_CHANNEL,
+            main_service_channel=settings.TWILIO_MAIN_NUMBER_CHANNEL,
         )
         service_data = _CombinedServiceData(
             relay_services=twilio_messaging_service_data,
@@ -598,11 +673,14 @@ class RelayNumberSyncChecker(DetectorTask):
 
         # Add main number
         if number_data.main_in_twilio:
+            in_correct_service = number_data.main_in_correct_service
+            in_wrong_service = number_data.main_in_service and not in_correct_service
             counts["twilio_numbers"].update(
                 {
                     "main_number": 1,
-                    "main_number_in_service": 1 if number_data.main_in_service else 0,
+                    "main_number_in_service": 1 if in_correct_service else 0,
                     "main_number_no_service": 0 if number_data.main_in_service else 1,
+                    "main_number_wrong_service": 1 if in_wrong_service else 0,
                 }
             )
         else:
@@ -623,6 +701,13 @@ class RelayNumberSyncChecker(DetectorTask):
             counts["twilio_numbers"][
                 f"cc_{code}_only_twilio_service"
             ] = number_data.only_twilio_service_count(code)
+            if number_data.in_both_services_count(code):
+                counts["twilio_numbers"][
+                    f"cc_{code}_correct_service"
+                ] = number_data.in_correct_services_count(code)
+                counts["twilio_numbers"][
+                    f"cc_{code}_wrong_service"
+                ] = number_data.in_wrong_services_count(code)
 
         # Add data about in-sync services, if any
         if service_data.in_both_db_count != 0:
@@ -679,7 +764,10 @@ class RelayNumberSyncChecker(DetectorTask):
         return list(
             _RelayNumberData(*vals)
             for vals in RelayNumber.objects.values_list(
-                "number", "country_code", "service__service_id"
+                "number",
+                "country_code",
+                "service__service_id",
+                "service__channel",
             )
         )
 
@@ -789,13 +877,16 @@ class RelayNumberSyncChecker(DetectorTask):
         only_twilio = SubSectionSpec("Only in Twilio Database", key="only_twilio_db")
         main_number = SubSectionSpec("Main Number in Twilio", key="main_number")
         main_in_service = SubSectionSpec(
-            "In a Messaging Service", key="main_number_in_service"
+            "In Correct Messaging Service", key="main_number_in_service"
+        )
+        main_wrong_service = SubSectionSpec(
+            "In Wrong Messaging Service", key="main_number_wrong_service"
         )
         main_no_service = SubSectionSpec(
             "Not in a Messaging Service", key="main_number_no_service"
         )
         twilio_all.subsections = [in_both, main_number, only_relay, only_twilio]
-        main_number.subsections = [main_in_service, main_no_service]
+        main_number.subsections = [main_in_service, main_wrong_service, main_no_service]
 
         service_in_both = SubSectionSpec("In Both Databases", key="in_both_db")
         in_sync_good = SubSectionSpec("In Sync, Good Data", key="synced_with_good_data")
@@ -833,6 +924,11 @@ class RelayNumberSyncChecker(DetectorTask):
                     SubSectionSpec(name, key=key + suffix)
                     for name, suffix in name_and_key_suffix
                 ]
+                subsections[0].subsections = [
+                    SubSectionSpec("In Correct Service", key=f"{key}_correct_service"),
+                    SubSectionSpec("In Wrong Service", key=f"{key}_wrong_service"),
+                ]
+
                 in_both.subsections.append(
                     SubSectionSpec(
                         f"Country Code {country_code}", key=key, subsections=subsections
