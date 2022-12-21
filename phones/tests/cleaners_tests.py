@@ -52,6 +52,10 @@ def setup_relay_number_test_data(
         "main_number_in_twilio": True,
         "main_number_in_twilio_service": True,
         "main_number_in_wrong_service": False,
+        "mismatch_service_friendly_name": False,
+        "mismatch_service_use_case": False,
+        "mismatch_service_campaign_use_case": False,
+        "mismatch_service_campaign_status": False,
         "remove_number_from_relay": False,
         "remove_number_from_relay_service": False,
         "remove_number_from_twilio": False,
@@ -65,12 +69,7 @@ def setup_relay_number_test_data(
         key: config_kwargs.get(key, default) for key, default in config_defaults.items()
     }
 
-    # Make all objects created in the past
-    verification_base_date = timezone.now() - timedelta(days=60)
-
-    # Create TwilioMessagingService objects and related Twilio mock objects
-    twilio_services: dict[str, TwilioMessagingService] = {}
-    mock_twilio_services: dict[str, Mock] = {}
+    # Setup messaging service test data
     service_data: dict[str, dict[str, Any]] = {
         "number_service": {
             # My deployment's service for RelayNumbers
@@ -94,28 +93,58 @@ def setup_relay_number_test_data(
             "in_twilio": not config["remove_twilio_service"],
         },
     }
+    if config["mismatch_service_friendly_name"]:
+        service_data["number_service"]["friendly_name"] = "Old Firefox Relay Name"
+        service_data["number_service"][
+            "twilio_friendly_name"
+        ] = "New Firefox Relay Name"
+    if config["mismatch_service_use_case"]:
+        service_data["number_service"]["use_case"] = "undeclared"
+        service_data["number_service"]["twilio_usecase"] = "notifications"
+    if config["mismatch_service_campaign_use_case"]:
+        service_data["number_service"]["campaign_use_case"] = "MIXED"
+        service_data["number_service"]["twilio_campaign_use_case"] = "PROXY"
+    if config["mismatch_service_campaign_status"]:
+        service_data["number_service"]["campaign_status"] = "IN_PROGRESS"
+        service_data["number_service"]["twilio_campaign_status"] = "VERIFIED"
+
+    # Create TwilioMessagingService objects and related Twilio mock objects
+    twilio_services: dict[str, TwilioMessagingService] = {}
+    mock_twilio_services: dict[str, Mock] = {}
     for service_key, data in service_data.items():
         twilio_numbers = data.pop("twilio_numbers", [])
         in_relay = data.pop("in_relay", True)
         in_twilio = data.pop("in_twilio", True)
         service_id = f"MG{uuid4().hex}"
+        friendly_name = data["friendly_name"]
+        channel = data["channel"]
+        use_case = data.get("use_case", "notifications")
+        campaign_use_case = data.get("campaign_use_case", "PROXY")
+        campaign_status = data.get("campaign_status", "VERIFIED")
 
         if in_relay:
             twilio_services[service_key] = baker.make(
                 TwilioMessagingService,
                 service_id=service_id,
-                friendly_name=data["friendly_name"],
-                use_case="notifications",
-                campaign_use_case=data["campaign_use_case"],
-                campaign_status="VERIFIED",
-                channel=data["channel"],
+                friendly_name=friendly_name,
+                channel=channel,
+                use_case=use_case,
+                campaign_use_case=campaign_use_case,
+                campaign_status=campaign_status,
             )
 
         if in_twilio:
+            friendly_name = data.get("twilio_friendly_name", friendly_name)
+            usecase = data.get("twilio_usecase", use_case)
+            campaign_use_case = data.get("twilio_campaign_use_case", campaign_use_case)
+            campaign_status = data.get("twilio_campaign_status", campaign_status)
+
             mock_twilio_service = create_mock_service(
                 service_id=service_id,
-                friendly_name=data["friendly_name"],
-                campaign_use_case=data["campaign_use_case"],
+                friendly_name=friendly_name,
+                usecase=usecase,
+                campaign_use_case=campaign_use_case,
+                campaign_status=campaign_status,
                 settings=settings,
             )
             for service_number in twilio_numbers:
@@ -143,7 +172,7 @@ def setup_relay_number_test_data(
             create_mock_number(settings.TWILIO_MAIN_NUMBER, settings)
         )
 
-    # Configure test Relay numbers
+    # Setup Relay number test data
     if config["relay_number_in_main_service"]:
         test_service_key = "main_service"
     elif config["relay_number_in_other_service"]:
@@ -176,7 +205,8 @@ def setup_relay_number_test_data(
         "+13015550007": {"enabled": False},
     }
 
-    # Setup RelayNumber instances and mock responses
+    # Create RelayNumber instances and mock responses
+    verification_base_date = timezone.now() - timedelta(days=60)
     for num, (relay_number, data) in enumerate(number_data.items()):
         # Create user
         user = make_phone_test_user()
@@ -224,7 +254,12 @@ def setup_relay_number_test_data(
 
 
 def create_mock_service(
-    service_id: str, friendly_name: str, campaign_use_case: str, settings: LazySettings
+    service_id: str,
+    friendly_name: str,
+    usecase: str,
+    campaign_use_case: str,
+    campaign_status: str,
+    settings: LazySettings,
 ) -> Mock:
     """
     Create a mock Service instance.
@@ -240,7 +275,7 @@ def create_mock_service(
         friendly_name=friendly_name,
         status_callback=None,
         us_app_to_person_registered=True,
-        usecase="notifications",
+        usecase=usecase,
         use_inbound_webhook_on_number=True,
     )
     service.phone_numbers.list.return_value = []
@@ -248,6 +283,7 @@ def create_mock_service(
         create_mock_us_app_to_person(
             messaging_service_sid=service_id,
             usecase=campaign_use_case,
+            status=campaign_status,
             settings=settings,
         )
     ]
@@ -255,7 +291,7 @@ def create_mock_service(
 
 
 def create_mock_us_app_to_person(
-    messaging_service_sid: str, usecase: str, settings: LazySettings
+    messaging_service_sid: str, usecase: str, status: str, settings: LazySettings
 ) -> Mock:
     """
     Create a mock US App to Person (brand registration) instance
@@ -271,7 +307,7 @@ def create_mock_us_app_to_person(
         brand_registration_sid=settings.TWILIO_BRAND_REGISTRATION_SID,
         messaging_service_sid=messaging_service_sid,
         sid=f"QE{uuid4().hex}",
-        campaign_status="VERIFIED",
+        campaign_status=status,
         us_app_to_person_usecase=usecase,
     )
 
@@ -776,4 +812,59 @@ def test_relay_number_sync_checker_only_relay_service(
     expected_counts["twilio_messaging_services"]["not_ours"] -= 1
     expected_counts["twilio_messaging_services"]["only_relay_db"] += 1
     assert checker.counts == expected_counts
+    assert checker.clean() == 0
+
+
+def get_out_of_sync_counts() -> Counts:
+    """Return RelayNumberSyncChecker.counts when a service is out of sync."""
+    expected_counts = get_synced_counts()
+    expected_counts["summary"]["needs_cleaning"] += 1
+    expected_counts["summary"]["ok"] -= 1
+    expected_counts["twilio_messaging_services"]["synced_with_good_data"] -= 1
+    expected_counts["twilio_messaging_services"]["ready"] -= 1
+    expected_counts["twilio_messaging_services"]["out_of_sync"] += 1
+    return expected_counts
+
+
+@pytest.mark.relay_test_config(mismatch_service_friendly_name=True)
+def test_relay_number_sync_checker_service_friendly_name_out_of_sync(
+    setup_relay_number_test_data: None,
+) -> None:
+    """RelayNumberSyncChecker detects a service friendly name mismatch."""
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 1
+    assert checker.counts == get_out_of_sync_counts()
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(mismatch_service_use_case=True)
+def test_relay_number_sync_checker_service_use_case_out_of_sync(
+    setup_relay_number_test_data: None,
+) -> None:
+    """RelayNumberSyncChecker detects a service use case mismatch."""
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 1
+    assert checker.counts == get_out_of_sync_counts()
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(mismatch_service_campaign_use_case=True)
+def test_relay_number_sync_checker_service_campaign_use_case_out_of_sync(
+    setup_relay_number_test_data: None,
+) -> None:
+    """RelayNumberSyncChecker detects a service campaign use case mismatch."""
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 1
+    assert checker.counts == get_out_of_sync_counts()
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(mismatch_service_campaign_status=True)
+def test_relay_number_sync_checker_service_campaign_status_out_of_sync(
+    setup_relay_number_test_data: None,
+) -> None:
+    """RelayNumberSyncChecker detects a service campaign use case mismatch."""
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 1
+    assert checker.counts == get_out_of_sync_counts()
     assert checker.clean() == 0
