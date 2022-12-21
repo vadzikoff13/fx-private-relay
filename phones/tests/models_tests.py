@@ -33,7 +33,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def make_phone_test_user():
+def make_phone_test_user() -> User:
     phone_user = baker.make(User)
     phone_user_profile = Profile.objects.get(user=phone_user)
     phone_user_profile.date_subscribed = datetime.now(tz=timezone.utc)
