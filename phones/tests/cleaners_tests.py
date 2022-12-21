@@ -11,7 +11,7 @@ from django.utils import timezone
 from twilio.rest import Client
 
 from model_bakery import baker
-from typing import Any
+from typing import Any, Optional
 import pytest
 
 from phones.cleaners import RelayNumberSyncChecker
@@ -56,6 +56,11 @@ def setup_relay_number_test_data(
         "mismatch_service_use_case": False,
         "mismatch_service_campaign_use_case": False,
         "mismatch_service_campaign_status": False,
+        "bad_service_status_callback": False,
+        "bad_service_unregistered": False,
+        "bad_service_usecase": False,
+        "bad_service_use_inbound_webhook": False,
+        "bad_service_campaign_use_case": False,
         "remove_number_from_relay": False,
         "remove_number_from_relay_service": False,
         "remove_number_from_twilio": False,
@@ -70,13 +75,14 @@ def setup_relay_number_test_data(
     }
 
     # Setup messaging service test data
+    number_service: dict[str, Any] = {
+        # My deployment's service for RelayNumbers
+        "friendly_name": "My Firefox Relay 1",
+        "channel": settings.TWILIO_CHANNEL,
+        "campaign_use_case": "PROXY",
+    }
     service_data: dict[str, dict[str, Any]] = {
-        "number_service": {
-            # My deployment's service for RelayNumbers
-            "friendly_name": "My Firefox Relay 1",
-            "channel": settings.TWILIO_CHANNEL,
-            "campaign_use_case": "PROXY",
-        },
+        "number_service": number_service,
         "main_service": {
             # My deployment's service for the main number
             "friendly_name": "My Firefox Relay Main Service",
@@ -93,20 +99,29 @@ def setup_relay_number_test_data(
             "in_twilio": not config["remove_twilio_service"],
         },
     }
+    if config["bad_service_status_callback"]:
+        bad_status_callback = f"{settings.SITE_ORIGIN}/api/v1/status_callback"
+        number_service["twilio_status_callback"] = bad_status_callback
+    if config["bad_service_unregistered"]:
+        number_service["has_campaign"] = False
+    if config["bad_service_usecase"]:
+        number_service["use_case"] = "undeclared"
+    if config["bad_service_use_inbound_webhook"]:
+        number_service["twilio_use_inbound_webhook"] = False
+    if config["bad_service_campaign_use_case"]:
+        number_service["campaign_use_case"] = "MIXED"
     if config["mismatch_service_friendly_name"]:
-        service_data["number_service"]["friendly_name"] = "Old Firefox Relay Name"
-        service_data["number_service"][
-            "twilio_friendly_name"
-        ] = "New Firefox Relay Name"
+        number_service["friendly_name"] = "Old Firefox Relay Name"
+        number_service["twilio_friendly_name"] = "New Firefox Relay Name"
     if config["mismatch_service_use_case"]:
-        service_data["number_service"]["use_case"] = "undeclared"
-        service_data["number_service"]["twilio_usecase"] = "notifications"
+        number_service["use_case"] = "undeclared"
+        number_service["twilio_usecase"] = "notifications"
     if config["mismatch_service_campaign_use_case"]:
-        service_data["number_service"]["campaign_use_case"] = "MIXED"
-        service_data["number_service"]["twilio_campaign_use_case"] = "PROXY"
+        number_service["campaign_use_case"] = "MIXED"
+        number_service["twilio_campaign_use_case"] = "PROXY"
     if config["mismatch_service_campaign_status"]:
-        service_data["number_service"]["campaign_status"] = "IN_PROGRESS"
-        service_data["number_service"]["twilio_campaign_status"] = "VERIFIED"
+        number_service["campaign_status"] = "IN_PROGRESS"
+        number_service["twilio_campaign_status"] = "VERIFIED"
 
     # Create TwilioMessagingService objects and related Twilio mock objects
     twilio_services: dict[str, TwilioMessagingService] = {}
@@ -119,8 +134,13 @@ def setup_relay_number_test_data(
         friendly_name = data["friendly_name"]
         channel = data["channel"]
         use_case = data.get("use_case", "notifications")
-        campaign_use_case = data.get("campaign_use_case", "PROXY")
-        campaign_status = data.get("campaign_status", "VERIFIED")
+        has_campaign = data.get("has_campaign", True)
+        if has_campaign:
+            campaign_use_case = data.get("campaign_use_case", "PROXY")
+            campaign_status = data.get("campaign_status", "VERIFIED")
+        else:
+            campaign_use_case = ""
+            campaign_status = ""
 
         if in_relay:
             twilio_services[service_key] = baker.make(
@@ -138,11 +158,16 @@ def setup_relay_number_test_data(
             usecase = data.get("twilio_usecase", use_case)
             campaign_use_case = data.get("twilio_campaign_use_case", campaign_use_case)
             campaign_status = data.get("twilio_campaign_status", campaign_status)
+            status_callback = data.get("twilio_status_callback", None)
+            use_inbound_webhook = data.get("twilio_use_inbound_webhook", True)
 
             mock_twilio_service = create_mock_service(
                 service_id=service_id,
                 friendly_name=friendly_name,
                 usecase=usecase,
+                status_callback=status_callback,
+                use_inbound_webhook=use_inbound_webhook,
+                has_campaign=has_campaign,
                 campaign_use_case=campaign_use_case,
                 campaign_status=campaign_status,
                 settings=settings,
@@ -256,7 +281,10 @@ def setup_relay_number_test_data(
 def create_mock_service(
     service_id: str,
     friendly_name: str,
+    status_callback: Optional[str],
     usecase: str,
+    use_inbound_webhook: bool,
+    has_campaign: bool,
     campaign_use_case: str,
     campaign_status: str,
     settings: LazySettings,
@@ -273,20 +301,23 @@ def create_mock_service(
         account_sid=settings.TWILIO_ACCOUNT_SID,
         sid=service_id,
         friendly_name=friendly_name,
-        status_callback=None,
-        us_app_to_person_registered=True,
+        status_callback=status_callback,
+        us_app_to_person_registered=has_campaign,
         usecase=usecase,
-        use_inbound_webhook_on_number=True,
+        use_inbound_webhook_on_number=use_inbound_webhook,
     )
     service.phone_numbers.list.return_value = []
-    service.us_app_to_person.list.return_value = [
-        create_mock_us_app_to_person(
-            messaging_service_sid=service_id,
-            usecase=campaign_use_case,
-            status=campaign_status,
-            settings=settings,
-        )
-    ]
+    if has_campaign:
+        service.us_app_to_person.list.return_value = [
+            create_mock_us_app_to_person(
+                messaging_service_sid=service_id,
+                usecase=campaign_use_case,
+                status=campaign_status,
+                settings=settings,
+            )
+        ]
+    else:
+        service.us_app_to_person.list.return_value = []
     return service
 
 
@@ -863,8 +894,74 @@ def test_relay_number_sync_checker_service_campaign_use_case_out_of_sync(
 def test_relay_number_sync_checker_service_campaign_status_out_of_sync(
     setup_relay_number_test_data: None,
 ) -> None:
-    """RelayNumberSyncChecker detects a service campaign use case mismatch."""
+    """RelayNumberSyncChecker detects a service campaign status mismatch."""
     checker = RelayNumberSyncChecker()
     assert checker.issues() == 1
     assert checker.counts == get_out_of_sync_counts()
+    assert checker.clean() == 0
+
+
+def get_bad_data_counts() -> Counts:
+    """Get RelayNumberSyncChecker.counts when one service has bad data."""
+    expected_counts = get_synced_counts()
+    expected_counts["summary"]["needs_cleaning"] += 1
+    expected_counts["summary"]["ok"] -= 1
+    expected_counts["twilio_messaging_services"]["synced_with_good_data"] -= 1
+    expected_counts["twilio_messaging_services"]["ready"] -= 1
+    expected_counts["twilio_messaging_services"]["synced_but_bad_data"] += 1
+    return expected_counts
+
+
+@pytest.mark.relay_test_config(bad_service_status_callback=True)
+def test_relay_number_sync_checker_bad_service_status_callback(
+    setup_relay_number_test_data: None,
+) -> None:
+    """RelayNumberSyncChecker detects if the status callback is set."""
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 1
+    assert checker.counts == get_bad_data_counts()
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(bad_service_unregistered=True)
+def test_relay_number_sync_checker_bad_service_unregistered(
+    setup_relay_number_test_data: None,
+) -> None:
+    """RelayNumberSyncChecker detects if a service has no US 10DLC registration."""
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 1
+    assert checker.counts == get_bad_data_counts()
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(bad_service_usecase=True)
+def test_relay_number_sync_checker_bad_service_usecase(
+    setup_relay_number_test_data: None,
+) -> None:
+    """RelayNumberSyncChecker detects if a service has a bad usecase."""
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 1
+    assert checker.counts == get_bad_data_counts()
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(bad_service_use_inbound_webhook=True)
+def test_relay_number_sync_checker_bad_service_use_inbound_webhook_unset(
+    setup_relay_number_test_data: None,
+) -> None:
+    """RelayNumberSyncChecker detects if use_inbound_webhook_on_number is unset."""
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 1
+    assert checker.counts == get_bad_data_counts()
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(bad_service_campaign_use_case=True)
+def test_relay_number_sync_checker_bad_service_campaign_use_case(
+    setup_relay_number_test_data: None,
+) -> None:
+    """RelayNumberSyncChecker detects if service's 10 DLC use case is wrong."""
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 1
+    assert checker.counts == get_bad_data_counts()
     assert checker.clean() == 0
