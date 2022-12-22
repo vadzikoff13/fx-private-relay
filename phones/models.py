@@ -13,6 +13,7 @@ from django.db import models
 from django.db.models.signals import post_save
 from django.dispatch.dispatcher import receiver
 from django.urls import reverse
+from django.utils.timezone import now as django_now
 
 from twilio.base.exceptions import TwilioRestException
 from twilio.rest import Client
@@ -242,11 +243,17 @@ class TwilioMessagingService(models.Model):
     spam = models.BooleanField(
         default=False, help_text="Service has been identifed as sending spam"
     )
-    size = models.IntegerField(
-        default=200, help_text="Maximum numbers to assign to this service"
-    )
     full = models.BooleanField(
         default=False, help_text="Service is at limit of associated phones"
+    )
+    current = models.BooleanField(
+        default=False, help_text="New numbers should be assigned to this service"
+    )
+    date_created = models.DateTimeField(
+        default=django_now, help_text="Creation time in Twilio"
+    )
+    date_updated = models.DateTimeField(
+        default=django_now, help_text="Update time in Twilio"
     )
 
 

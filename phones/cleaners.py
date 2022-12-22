@@ -42,7 +42,6 @@ class _RelayServiceData:
     campaign_status: str
     channel: str
     spam: bool
-    size: int
     full: bool
 
 
@@ -414,7 +413,6 @@ class _CombinedService:
     relay_campaign_status: Optional[str] = None
     relay_channel: Optional[str] = None
     relay_spam: Optional[bool] = None
-    relay_size: Optional[int] = None
     relay_full: Optional[bool] = None
     is_relay_service_channel: Optional[bool] = None
     is_main_service_channel: Optional[bool] = None
@@ -525,7 +523,6 @@ class _CombinedServiceData:
                 relay_campaign_status=relay_service.campaign_status or None,
                 relay_channel=relay_service.channel,
                 relay_spam=relay_service.spam,
-                relay_size=relay_service.size,
                 relay_full=relay_service.full,
                 is_relay_service_channel=relay_service.channel == relay_service_channel,
                 is_main_service_channel=relay_service.channel == main_service_channel,
@@ -914,7 +911,6 @@ class RelayNumberSyncChecker(DetectorTask):
                 "campaign_status",
                 "channel",
                 "spam",
-                "size",
                 "full",
             )
         )
