@@ -69,6 +69,11 @@ def setup_relay_number_test_data(
         "remove_twilio_service": False,
         "relay_number_in_main_service": False,
         "relay_number_in_other_service": False,
+        "set_service_campaign_status_pending": False,
+        "set_service_campaign_status_failed": False,
+        "set_service_campaign_status_other": False,
+        "set_service_full": False,
+        "set_service_spam": False,
     }
     config = {
         key: config_kwargs.get(key, default) for key, default in config_defaults.items()
@@ -99,6 +104,16 @@ def setup_relay_number_test_data(
             "in_twilio": not config["remove_twilio_service"],
         },
     }
+    if config["set_service_campaign_status_pending"]:
+        number_service["campaign_status"] = "PENDING"
+    if config["set_service_campaign_status_failed"]:
+        number_service["campaign_status"] = "FAILED"
+    if config["set_service_campaign_status_other"]:
+        number_service["campaign_status"] = "OTHER"
+    if config["set_service_spam"]:
+        number_service["spam"] = True
+    if config["set_service_full"]:
+        number_service["full"] = True
     if config["bad_service_status_callback"]:
         bad_status_callback = f"{settings.SITE_ORIGIN}/api/v1/status_callback"
         number_service["twilio_status_callback"] = bad_status_callback
@@ -134,6 +149,8 @@ def setup_relay_number_test_data(
         friendly_name = data["friendly_name"]
         channel = data["channel"]
         use_case = data.get("use_case", "notifications")
+        full = data.get("full", False)
+        spam = data.get("spam", False)
         has_campaign = data.get("has_campaign", True)
         if has_campaign:
             campaign_use_case = data.get("campaign_use_case", "PROXY")
@@ -149,6 +166,8 @@ def setup_relay_number_test_data(
                 friendly_name=friendly_name,
                 channel=channel,
                 use_case=use_case,
+                full=full,
+                spam=spam,
                 campaign_use_case=campaign_use_case,
                 campaign_status=campaign_status,
             )
@@ -964,4 +983,74 @@ def test_relay_number_sync_checker_bad_service_campaign_use_case(
     checker = RelayNumberSyncChecker()
     assert checker.issues() == 1
     assert checker.counts == get_bad_data_counts()
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(set_service_campaign_status_pending=True)
+def test_relay_number_sync_checker_service_campaign_status_pending(
+    setup_relay_number_test_data: None,
+) -> None:
+    """RelayNumberSyncChecker detects if a service campaign is pending acceptance."""
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 0
+    expected_counts = get_synced_counts()
+    expected_counts["twilio_messaging_services"]["ready"] -= 1
+    expected_counts["twilio_messaging_services"]["pending"] += 1
+    assert checker.counts == expected_counts
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(set_service_campaign_status_failed=True)
+def test_relay_number_sync_checker_service_campaign_status_failed(
+    setup_relay_number_test_data: None,
+) -> None:
+    """RelayNumberSyncChecker detects if a service campaign failed acceptance."""
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 0
+    expected_counts = get_synced_counts()
+    expected_counts["twilio_messaging_services"]["ready"] -= 1
+    expected_counts["twilio_messaging_services"]["failed"] += 1
+    assert checker.counts == expected_counts
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(set_service_campaign_status_other=True)
+def test_relay_number_sync_checker_service_campaign_status_other(
+    setup_relay_number_test_data: None,
+) -> None:
+    """RelayNumberSyncChecker treats unknown campaign status as failed."""
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 0
+    expected_counts = get_synced_counts()
+    expected_counts["twilio_messaging_services"]["ready"] -= 1
+    expected_counts["twilio_messaging_services"]["failed"] += 1
+    assert checker.counts == expected_counts
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(set_service_spam=True)
+def test_relay_number_sync_checker_service_spam(
+    setup_relay_number_test_data: None,
+) -> None:
+    """RelayNumberSyncChecker does not consider a service ready if spam=True"""
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 0
+    expected_counts = get_synced_counts()
+    expected_counts["twilio_messaging_services"]["ready"] -= 1
+    expected_counts["twilio_messaging_services"]["spam"] += 1
+    assert checker.counts == expected_counts
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(set_service_full=True)
+def test_relay_number_sync_checker_service_full(
+    setup_relay_number_test_data: None,
+) -> None:
+    """RelayNumberSyncChecker does not consider a service ready if full=True"""
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 0
+    expected_counts = get_synced_counts()
+    expected_counts["twilio_messaging_services"]["ready"] -= 1
+    expected_counts["twilio_messaging_services"]["full"] += 1
+    assert checker.counts == expected_counts
     assert checker.clean() == 0
