@@ -56,6 +56,8 @@ def setup_relay_number_test_data(
         "mismatch_service_use_case": False,
         "mismatch_service_campaign_use_case": False,
         "mismatch_service_campaign_status": False,
+        "mismatch_service_date_created": False,
+        "mismatch_service_date_updated": False,
         "bad_service_status_callback": False,
         "bad_service_unregistered": False,
         "bad_service_usecase": False,
@@ -145,6 +147,10 @@ def setup_relay_number_test_data(
     if config["mismatch_service_campaign_status"]:
         number_service["campaign_status"] = "IN_PROGRESS"
         number_service["twilio_campaign_status"] = "VERIFIED"
+    if config["mismatch_service_date_created"]:
+        number_service["twilio_date_created"] = base_date + timedelta(days=1)
+    if config["mismatch_service_date_updated"]:
+        number_service["twilio_date_updated"] = base_date + timedelta(days=1)
 
     # Create TwilioMessagingService objects and related Twilio mock objects
     twilio_services: dict[str, TwilioMessagingService] = {}
@@ -936,6 +942,28 @@ def test_relay_number_sync_checker_service_campaign_use_case_out_of_sync(
 
 @pytest.mark.relay_test_config(mismatch_service_campaign_status=True)
 def test_relay_number_sync_checker_service_campaign_status_out_of_sync(
+    setup_relay_number_test_data: None,
+) -> None:
+    """RelayNumberSyncChecker detects a service campaign status mismatch."""
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 1
+    assert checker.counts == get_out_of_sync_counts()
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(mismatch_service_date_created=True)
+def test_relay_number_sync_checker_service_date_created(
+    setup_relay_number_test_data: None,
+) -> None:
+    """RelayNumberSyncChecker detects a service campaign status mismatch."""
+    checker = RelayNumberSyncChecker()
+    assert checker.issues() == 1
+    assert checker.counts == get_out_of_sync_counts()
+    assert checker.clean() == 0
+
+
+@pytest.mark.relay_test_config(mismatch_service_date_updated=True)
+def test_relay_number_sync_checker_service_date_updated(
     setup_relay_number_test_data: None,
 ) -> None:
     """RelayNumberSyncChecker detects a service campaign status mismatch."""
