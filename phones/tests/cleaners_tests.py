@@ -1,7 +1,7 @@
 """Tests for phones/cleaners.py"""
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from unittest.mock import Mock
 from uuid import uuid4
 
@@ -80,11 +80,15 @@ def setup_relay_number_test_data(
     }
 
     # Setup messaging service test data
+    base_date = timezone.now() - timedelta(days=60)
     number_service: dict[str, Any] = {
         # My deployment's service for RelayNumbers
         "friendly_name": "My Firefox Relay 1",
         "channel": settings.TWILIO_CHANNEL,
         "campaign_use_case": "PROXY",
+        "current": True,
+        "date_created": base_date + timedelta(seconds=60 * 60),
+        "date_updated": base_date + timedelta(seconds=60 * 60),
     }
     service_data: dict[str, dict[str, Any]] = {
         "number_service": number_service,
@@ -93,6 +97,8 @@ def setup_relay_number_test_data(
             "friendly_name": "My Firefox Relay Main Service",
             "channel": settings.TWILIO_MAIN_NUMBER_CHANNEL,
             "campaign_use_case": "ACCOUNT_NOTIFICATION",
+            "date_created": base_date + timedelta(seconds=30 * 60),
+            "date_updated": base_date + timedelta(seconds=30 * 60),
         },
         "other_service": {
             # A different deployment's service
@@ -100,6 +106,8 @@ def setup_relay_number_test_data(
             "channel": "unknown",
             "campaign_use_case": "PROXY",
             "twilio_numbers": ["+14015550001"],
+            "date_created": base_date + timedelta(days=7),
+            "date_updated": base_date + timedelta(days=7),
             "in_relay": not config["remove_relay_service"],
             "in_twilio": not config["remove_twilio_service"],
         },
@@ -148,9 +156,12 @@ def setup_relay_number_test_data(
         service_id = f"MG{uuid4().hex}"
         friendly_name = data["friendly_name"]
         channel = data["channel"]
+        date_created = data["date_created"]
+        date_updated = data["date_updated"]
         use_case = data.get("use_case", "notifications")
         full = data.get("full", False)
         spam = data.get("spam", False)
+        current = data.get("current", False)
         has_campaign = data.get("has_campaign", True)
         if has_campaign:
             campaign_use_case = data.get("campaign_use_case", "PROXY")
@@ -165,9 +176,12 @@ def setup_relay_number_test_data(
                 service_id=service_id,
                 friendly_name=friendly_name,
                 channel=channel,
+                date_created=date_created,
+                date_updated=date_updated,
                 use_case=use_case,
                 full=full,
                 spam=spam,
+                current=current,
                 campaign_use_case=campaign_use_case,
                 campaign_status=campaign_status,
             )
@@ -179,6 +193,8 @@ def setup_relay_number_test_data(
             campaign_status = data.get("twilio_campaign_status", campaign_status)
             status_callback = data.get("twilio_status_callback", None)
             use_inbound_webhook = data.get("twilio_use_inbound_webhook", True)
+            date_created = data.get("twilio_date_created", date_created)
+            date_updated = data.get("twilio_date_updated", date_updated)
 
             mock_twilio_service = create_mock_service(
                 service_id=service_id,
@@ -186,6 +202,8 @@ def setup_relay_number_test_data(
                 usecase=usecase,
                 status_callback=status_callback,
                 use_inbound_webhook=use_inbound_webhook,
+                date_created=date_created,
+                date_updated=date_updated,
                 has_campaign=has_campaign,
                 campaign_use_case=campaign_use_case,
                 campaign_status=campaign_status,
@@ -250,14 +268,13 @@ def setup_relay_number_test_data(
     }
 
     # Create RelayNumber instances and mock responses
-    verification_base_date = timezone.now() - timedelta(days=60)
     for num, (relay_number, data) in enumerate(number_data.items()):
         # Create user
         user = make_phone_test_user()
 
         # Create real number for user
         real_number = relay_number.replace("+1301", "+1201").replace("+1306", "+1639")
-        verification_date = verification_base_date + timedelta(seconds=60 * num)
+        verification_date = base_date + timedelta(days=1, seconds=60 * num)
         country_code = data.pop("country_code", "US")
         service_key = data.pop("service_key", "number_service")
         baker.make(
@@ -303,6 +320,8 @@ def create_mock_service(
     status_callback: Optional[str],
     usecase: str,
     use_inbound_webhook: bool,
+    date_created: datetime,
+    date_updated: datetime,
     has_campaign: bool,
     campaign_use_case: str,
     campaign_status: str,
@@ -311,20 +330,24 @@ def create_mock_service(
     """
     Create a mock Service instance.
 
-    Omitted properties: area_code_geomatch, date_created, date_updated,
-    fallback_method, fallback_to_long_code, fallback_url, inbound_method,
-    inbound_request_url, links, mms_converter, scan_message_content,
-    smart_encoding, sticky_sender, synchronous_validation, url, validity_period
+    Omitted properties: area_code_geomatch, fallback_method,
+    fallback_to_long_code, fallback_url, inbound_method, inbound_request_url,
+    links, mms_converter, scan_message_content, smart_encoding, sticky_sender,
+    synchronous_validation, url, validity_period
     """
-    service = Mock(
-        account_sid=settings.TWILIO_ACCOUNT_SID,
-        sid=service_id,
-        friendly_name=friendly_name,
-        status_callback=status_callback,
-        us_app_to_person_registered=has_campaign,
-        usecase=usecase,
-        use_inbound_webhook_on_number=use_inbound_webhook,
-    )
+    service_properties = {
+        "account_sid": settings.TWILIO_ACCOUNT_SID,
+        "sid": service_id,
+        "friendly_name": friendly_name,
+        "status_callback": status_callback,
+        "us_app_to_person_registered": has_campaign,
+        "usecase": usecase,
+        "use_inbound_webhook_on_number": use_inbound_webhook,
+        "date_created": date_created,
+        "date_updated": date_updated,
+    }
+    spec_set = list(service_properties) + ["phone_numbers", "us_app_to_person"]
+    service = Mock(spec_set=spec_set, **service_properties)
     service.phone_numbers.list.return_value = []
     if has_campaign:
         service.us_app_to_person.list.return_value = [
@@ -352,14 +375,16 @@ def create_mock_us_app_to_person(
     message_samples, mock, opt_in_keywords, opt_in_message, opt_out_keywords,
     opt_out_message, rate_limits, url
     """
-    return Mock(
-        account_sid=settings.TWILIO_ACCOUNT_SID,
-        brand_registration_sid=settings.TWILIO_BRAND_REGISTRATION_SID,
-        messaging_service_sid=messaging_service_sid,
-        sid=f"QE{uuid4().hex}",
-        campaign_status=status,
-        us_app_to_person_usecase=usecase,
-    )
+    campaign_properties = {
+        "account_sid": settings.TWILIO_ACCOUNT_SID,
+        "brand_registration_sid": settings.TWILIO_BRAND_REGISTRATION_SID,
+        "messaging_service_sid": messaging_service_sid,
+        "sid": f"QE{uuid4().hex}",
+        "campaign_status": status,
+        "us_app_to_person_usecase": usecase,
+    }
+
+    return Mock(spec_set=list(campaign_properties), **campaign_properties)
 
 
 def create_mock_number(phone_number: str, settings: LazySettings) -> Mock:

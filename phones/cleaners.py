@@ -3,6 +3,7 @@
 from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime
 from functools import lru_cache
 from typing import Optional
 
@@ -43,6 +44,9 @@ class _RelayServiceData:
     channel: str
     spam: bool
     full: bool
+    current: bool
+    date_created: datetime
+    date_updated: datetime
 
 
 @dataclass
@@ -70,6 +74,8 @@ class _TwilioServiceData:
     us_app_to_person_registered: bool
     usecase: str
     use_inbound_webhook_on_number: bool
+    date_created: datetime
+    date_updated: datetime
     campaigns: list[_TwilioCampaignData]
 
     @cached_property
@@ -414,6 +420,9 @@ class _CombinedService:
     relay_channel: Optional[str] = None
     relay_spam: Optional[bool] = None
     relay_full: Optional[bool] = None
+    relay_current: Optional[bool] = None
+    relay_date_created: Optional[datetime] = None
+    relay_date_updated: Optional[datetime] = None
     is_relay_service_channel: Optional[bool] = None
     is_main_service_channel: Optional[bool] = None
     is_twilio_service: bool = False
@@ -425,22 +434,28 @@ class _CombinedService:
     twilio_campaign_sid: Optional[str] = None
     twilio_campaign_us_app_to_person_usecase: Optional[str] = None
     twilio_campaign_status: Optional[str] = None
+    twilio_date_created: Optional[datetime] = None
+    twilio_date_updated: Optional[datetime] = None
 
     @property
     def in_both_db(self) -> bool:
         return self.is_relay_service and self.is_twilio_service
 
     @property
-    def is_synced(self) -> bool:
+    def fields_are_synced(self) -> bool:
         return (
-            self.is_relay_service
-            and self.is_twilio_service
-            and self.relay_friendly_name == self.twilio_friendly_name
+            self.relay_friendly_name == self.twilio_friendly_name
             and self.relay_use_case == self.twilio_usecase
             and self.relay_campaign_use_case
             == self.twilio_campaign_us_app_to_person_usecase
             and self.relay_campaign_status == self.twilio_campaign_status
+            and self.relay_date_created == self.twilio_date_created
+            and self.relay_date_updated == self.twilio_date_updated
         )
+
+    @property
+    def is_synced(self) -> bool:
+        return self.in_both_db and self.fields_are_synced
 
     @property
     def has_good_data(self) -> bool:
@@ -478,15 +493,7 @@ class _CombinedService:
     @property
     def can_sync(self) -> bool:
         return (self.is_twilio_service and not self.is_relay_service) or (
-            self.is_twilio_service
-            and self.is_relay_service
-            and not (
-                self.relay_friendly_name == self.twilio_friendly_name
-                and self.relay_use_case == self.twilio_usecase
-                and self.relay_campaign_use_case
-                == self.twilio_campaign_us_app_to_person_usecase
-                and self.relay_campaign_status == self.twilio_campaign_status
-            )
+            self.in_both_db and not self.fields_are_synced
         )
 
     @property
@@ -524,6 +531,9 @@ class _CombinedServiceData:
                 relay_channel=relay_service.channel,
                 relay_spam=relay_service.spam,
                 relay_full=relay_service.full,
+                relay_current=relay_service.current,
+                relay_date_created=relay_service.date_created,
+                relay_date_updated=relay_service.date_updated,
                 is_relay_service_channel=relay_service.channel == relay_service_channel,
                 is_main_service_channel=relay_service.channel == main_service_channel,
             )
@@ -546,6 +556,8 @@ class _CombinedServiceData:
             service.twilio_use_inbound_webhook_on_number = (
                 twilio_service.use_inbound_webhook_on_number
             )
+            service.twilio_date_created = twilio_service.date_created
+            service.twilio_date_updated = twilio_service.date_updated
             if twilio_service.campaign:
                 service.twilio_campaign_sid = twilio_service.campaign.campaign_sid
                 service.twilio_campaign_us_app_to_person_usecase = (
@@ -912,6 +924,9 @@ class RelayNumberSyncChecker(DetectorTask):
                 "channel",
                 "spam",
                 "full",
+                "current",
+                "date_created",
+                "date_updated",
             )
         )
 
@@ -942,6 +957,8 @@ class RelayNumberSyncChecker(DetectorTask):
                 us_app_to_person_registered=service.us_app_to_person_registered,
                 usecase=service.usecase,
                 use_inbound_webhook_on_number=service.use_inbound_webhook_on_number,
+                date_created=service.date_created,
+                date_updated=service.date_updated,
                 campaigns=campaigns,
             )
             data.append(service_data)
