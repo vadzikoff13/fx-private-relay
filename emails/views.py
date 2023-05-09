@@ -935,45 +935,81 @@ def _get_address(address: str) -> RelayAddress | DomainAddress:
 
 
 def _handle_bounce(message_json):
-    incr_if_enabled("email_bounce", 1)
-    bounce = message_json.get("bounce")
-    bounced_recipients = bounce.get("bouncedRecipients")
+    bounce = message_json.get("bounce", {})
+    bounceType = bounce.get("bounceType", "none")
+    bounceSubType = bounce.get("bounceSubType", "none")
+    bounced_recipients = bounce.get("bouncedRecipients", [])
+
+    now = datetime.now(timezone.utc)
+    bounce_data = []
     for recipient in bounced_recipients:
         recipient_address = recipient.pop("emailAddress", None)
+        data = recipient.copy()  # may have action, status, and diagnosticCode
+        data["user"] = "no_address"
+        data["relay_action"] = "no_action"
+        bounce_data.append(data)
+
         if recipient_address is None:
             continue
+
         recipient_address = parseaddr(recipient_address)[1]
         recipient_domain = recipient_address.split("@")[1]
-        info_logger.info(
-            f"bounced recipient domain: {recipient_domain}", extra=recipient
-        )
+        data["domain"] = recipient_domain
+
         try:
             user = User.objects.get(email=recipient_address)
             profile = user.profile
+            data["user"] = "found"
         except User.DoesNotExist:
-            incr_if_enabled("email_bounce_relay_user_gone", 1)
             # TODO: handle bounce for a user who no longer exists
             # add to SES account-wide suppression list?
-            return HttpResponse("Address does not exist", status=404)
-        now = datetime.now(timezone.utc)
-        incr_if_enabled(
-            "email_bounce_%s_%s"
-            % (bounce.get("bounceType"), bounce.get("bounceSubType")),
-            1,
-        )
-        # if an email bounced as spam, set to auto block spam for this user
-        # and DON'T set them into bounce pause state
-        if any("spam" in val.lower() for val in recipient.values()):
-            profile.auto_block_spam = True
-            profile.save()
+            data["user"] = "missing"
             continue
-        if bounce.get("bounceType") == "Permanent":
+
+        action = None
+        if any("spam" in val.lower() for val in recipient.values()):
+            # if an email bounced as spam, set to auto block spam for this user
+            # and DON'T set them into bounce pause state
+            action = "auto_block_spam"
+            profile.auto_block_spam = True
+        elif bounceType == "Permanent":
+            # TODO: handle sub-types: 'General', 'NoEmail', etc.
+            action = "hard_bounce"
             profile.last_hard_bounce = now
-        if bounce.get("bounceType") == "Transient":
+        elif bounceType == "Transient":
+            # TODO: handle sub-types: 'MessageTooLarge', 'AttachmentRejected', etc.
+            action = "soft_bounce"
             profile.last_soft_bounce = now
-            # TODO: handle sub-types: 'MessageTooLarge', 'AttachmentRejected',
-            # 'ContentRejected'
-        profile.save()
+        if action:
+            data["relay_action"] = action
+            profile.save()
+
+    # Emit metrics and logs when there are no identified recipients
+    if not bounce_data:
+        extra = {
+            "bounce_type": bounceType,
+            "bounce_subtype": bounceSubType,
+            "user": "no_recipients",
+            "relay_action": "no_action",
+        }
+        incr_if_enabled("email_bounce", 1, tags=extra)
+        info_logger.info("bounce_without_recipients", extra=extra)
+
+    # Emit metrics and logs when there are recipients
+    for data in bounce_data:
+        tags = {
+            "bounce_type": bounceType,
+            "bounce_subtype": bounceSubType,
+            "user": data["user"],
+            "relay_action": data.get("relay_action", "no_action"),
+        }
+        incr_if_enabled("email_bounce", 1, tags)
+
+        recipient_domain = data.get("domain", "none")
+        info_logger.info(f"bounced recipient domain: {recipient_domain}", extra=data)
+
+    if any(data["user"] == "missing" for data in bounce_data):
+        return HttpResponse("Address does not exist", status=404)
     return HttpResponse("OK", status=200)
 
 
